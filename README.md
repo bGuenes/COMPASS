@@ -1,2 +1,2 @@
 # COMPASS
-Comparison Of Models in a Probabilistic Approach to Statistical Selection
+Comparison Of Models using Posterior Analysis for Simulation-based Settings
