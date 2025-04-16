@@ -14,7 +14,7 @@ from scipy.stats import norm, gaussian_kde
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from src.ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
+from .ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
 
 #################################################################################################
 # ///////////////////////////////////// Model Comparison ////////////////////////////////////////

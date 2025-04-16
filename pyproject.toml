@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bayes-compass"
+version = "0.0.2"
+authors = [
+  { name="Berkay Günes", email="b.guenes@stud.uni-heidelberg.de" },
+]
+description = "COMPASS: A Python package for bayesian model comparison in a simulation based setting"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch",
+    "numpy",
+    "scipy",
+    "schedulefree",
+    "matplotlib",
+    "seabron",
+    "tqdm",
+
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "GPL-3.0"
+license-files = ["COPYING"]
+
+[project.urls]
+Homepage = "https://github.com/bGuenes/COMPASS"
+Issues = "https://github.com/bGuenes/COMPASS/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/compass"]

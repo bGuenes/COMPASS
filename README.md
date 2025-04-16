@@ -1,2 +1,56 @@
-# COMPASS
-Comparison Of Models using Posterior Analysis for Simulation-based Settings
+<p align="center">
+    <img src="docs/COMPASS_logo.png" width="50%">
+</p>
+<img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg">
+<img src="https://img.shields.io/badge/License-GPLv3-yellow.svg">
+<img src="https://img.shields.io/badge/Status-Active-green.svg">
+
+
+### Comparison Of Models using Probabilistic Assessment in Simulation-based Settings <br>
+---
+COMPASS is a tool for Bayesian Model Comparison in simulation-based settings. It is build on top of the PyTorch library and utilizes GPUs for fast Training, Inference and Model Comparison.
+
+### Installation
+```bash
+pip install bayes-compass
+```
+
+### Comparison of Models
+The ``ModelTransfuser`` class provides a framework for the model comparison workflow. It can store the data from different models, train the models, and compare the posterior model probabilities.
+```python
+from compass import ModelTransfuser
+
+# Initialize the ModelTransfuser
+MTf = ModelTransfuser()
+
+# Add the data form the simulators
+MTf.add_data(model_name="Model1", train_data=data_1, val_data=val_data_1)
+MTf.add_data(model_name="Model2", train_data=data_2, val_data=val_data_2)
+
+# Initialize the ScoreBasedInferenceModels
+MTf.init_models()
+
+# Train the models
+MTf.train_models()
+
+# Compare the Posterior Model Probabilities
+observations = load_your_observations # Load in your observational data
+# Set the condition mask to 1 for the observed data indices and 0 for the latent values that will be inferred
+condition_mask = specify_condition_mask
+MTf.compare(observations, condition_mask)
+
+stats = MTf.stats
+
+# Plot the results
+MTf.plots()
+```
+
+### Simulation-Based Inference
+COMPASS also provides tools for simulation-based inference, allowing for the estimation of parameters.<br>
+The ``ScoreBasedInferenceModel`` class is used to perform inference on the models using a score-based approach.
+```python
+from compass import ScoreBasedInferenceModel
+
+SBIm = ScoreBasedInferenceModel(node_size=)
+```
+

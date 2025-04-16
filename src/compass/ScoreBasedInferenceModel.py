@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 
-from src.ConditionTransformer import ConditionTransformer
-from src.SDE import VESDE, VPSDE
-from src.Sampler import Sampler
-from src.Trainer import Trainer
-from src.MultiObsSampler import MultiObsSampler
+from .ConditionTransformer import ConditionTransformer
+from .SDE import VESDE, VPSDE
+from .Sampler import Sampler
+from .Trainer import Trainer
+from .MultiObsSampler import MultiObsSampler
 
 #################################################################################################
 # ///////////////////////////////////// Diffusion Model /////////////////////////////////////////
