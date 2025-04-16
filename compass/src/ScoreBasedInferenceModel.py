@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from src.ConditionTransformer import ConditionTransformer
-from src.sde import VESDE, VPSDE
+from src.SDE import VESDE, VPSDE
 from src.Sampler import Sampler
 from src.Trainer import Trainer
 from src.MultiObsSampler import MultiObsSampler
