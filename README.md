@@ -1,10 +1,10 @@
 <p align="center">
     <img src="docs/COMPASS_logo.png" width="50%">
 </p>
-<img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg">
-<img src="https://img.shields.io/badge/License-GPLv3-yellow.svg">
-<img src="https://img.shields.io/badge/Status-Active-green.svg">
 
+![Static Badge](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
+![Static Badge](https://img.shields.io/badge/License-GPLv3-yellow.svg)
+![Static Badge](https://img.shields.io/badge/Status-Active-green.svg)
 
 ### Comparison Of Models using Probabilistic Assessment in Simulation-based Settings <br>
 ---
