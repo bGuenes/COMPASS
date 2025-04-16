@@ -7,7 +7,8 @@
 ![Static Badge](https://img.shields.io/badge/Status-Active-green.svg)
 
 ## COMPASS: Comparison Of Models using Probabilistic Assessment in Simulation-based Settings
-`COMPASS` is a Python package designed for Bayesian Model Comparison in simulation-based settings. By comparing the predictive power of various models, it enables a better understanding of likelihood functions. It is especially suited for fields like astrophysics and computational biology, where simulation is integral to the modeling process.
+`COMPASS` is a Python package designed for Bayesian Model Comparison in simulation-based settings. By comparing the predictive power of various models, it aims to identify the most suitable model for a given dataset. <br>
+It is especially suited for fields like astrophysics and computational biology, where simulation is integral to the modeling process.
 
 ---
 
