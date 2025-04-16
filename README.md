@@ -8,7 +8,8 @@
 
 ### Comparison Of Models using Probabilistic Assessment in Simulation-based Settings <br>
 ---
-COMPASS is a tool for Bayesian Model Comparison in simulation-based settings. It is build on top of the PyTorch library and utilizes GPUs for fast Training, Inference and Model Comparison.
+``compass`` is a Python package to perform Bayesian Model Comparison in simulation-based settings, by comparing the predictive power of different models from approximating the likelihood function and also providing the correspondig parameters for the model. <br> 
+It is designed to be used in conjunction with simulation models, such as those used in astrophysics or computational biology and other fields where simulation is a key component of the modeling process.
 
 ### Installation
 ```bash
@@ -46,7 +47,7 @@ MTf.plots()
 ```
 
 ### Simulation-Based Inference
-COMPASS also provides tools for simulation-based inference, allowing for the estimation of parameters.<br>
+``compass`` also provides tools for simulation-based inference, allowing for the estimation of parameters.<br>
 The ``ScoreBasedInferenceModel`` class is used to perform inference on the models using a score-based approach.
 ```python
 from compass import ScoreBasedInferenceModel
