@@ -42,7 +42,7 @@ class Trainer():
     #############################################
     # ----- Training loop -----
     #############################################
-    def train(self, world_size, train_data, condition_mask_data=None, val_data=None, condition_mask_val=None, 
+    def train(self, world_size, train_data, val_data=None,
               max_epochs=500, early_stopping_patience=20, batch_size=128, lr=1e-3,
               path=None, name="Model", device="cpu", verbose=True):
         
@@ -53,9 +53,7 @@ class Trainer():
             rank: Rank of the current process
             world_size: Number of processes
             train_data: Training data
-            condition_mask_data: Condition mask for the training data
             val_data: Validation data
-            condition_mask_val: Condition mask for the validation data
             max_epochs: Maximum number of epochs
             early_stopping_patience: Number of epochs to wait before early stopping
             batch_size: Batch size
@@ -86,18 +84,18 @@ class Trainer():
         self.eps = 1e-3 # Epsilon for numerical stability and endpoint in diffusion process
 
         if self.world_size > 1:
-            mp.spawn(self._train_loop, args=(train_data, condition_mask_data, val_data, condition_mask_val), nprocs=self.world_size)
+            mp.spawn(self._train_loop, args=(train_data, val_data), nprocs=self.world_size)
         else:
             rank = 0
             self.device = device
-            self._train_loop(rank, train_data, condition_mask_data, val_data, condition_mask_val)
+            self._train_loop(rank, train_data, val_data)
 
         end_time = time.time()
         training_time = (end_time-start_time) / 60
         if self.verbose:
             print(f"Training took {training_time:.1f} minutes")
 
-    def _train_loop(self, rank, train_data, condition_mask_data, val_data, condition_mask_val):
+    def _train_loop(self, rank, train_data, val_data):
 
         # Set device distribution
         if self.world_size > 1:
@@ -108,9 +106,9 @@ class Trainer():
         self.verbose = self.verbose if rank == 0 else False
 
         # Check data structure
-        data_loader = self._prepare_data(train_data, condition_mask_data, batch_size=self.batch_size, rank=rank)
+        data_loader = self._prepare_data(train_data, batch_size=self.batch_size, rank=rank)
         if val_data is not None:
-            val_loader = self._prepare_data(val_data, condition_mask_val, batch_size=1_000, rank=rank)
+            val_loader = self._prepare_data(val_data, batch_size=1_000, rank=rank)
 
         # Init tracking variables
         best_val_loss = float('inf')
@@ -308,9 +306,8 @@ class Trainer():
 
         return data, condition_mask, idx
 
-    def _prepare_data(self, data, condition_mask, batch_size, rank):
-        if condition_mask is None:
-            condition_mask = torch.distributions.bernoulli.Bernoulli(0.33)
+    def _prepare_data(self, data, batch_size, rank):
+        condition_mask = torch.distributions.bernoulli.Bernoulli(0.33)
 
         dataset = TensorTupleDataset(data, condition_mask)
 

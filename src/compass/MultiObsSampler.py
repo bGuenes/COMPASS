@@ -246,14 +246,23 @@ class MultiObsSampler():
                 dist.barrier()
                 score_table = self._gather_scores(score_table, indices)
 
-            score = self._compositional_score(score_table, t, self.hierarchy)
+            score = self._compositional_score(score_table, x, t, self.hierarchy)
                 
         return score[indices]
     
-    def _compositional_score(self, scores, t, hierarchy):
-        prefactor = (1 - len(scores))*(1 - t) * self.prior_score[0]
-        compositional_scores = prefactor + torch.sum(scores, dim=0)
-        compositional_scores = compositional_scores.repeat(len(scores), 1, 1)
+    def _compositional_score(self, scores, x, t, hierarchy):
+        mu_prior = torch.zeros_like(x)
+        mu_prior[:,:,0] = -2.3
+        mu_prior[:,:,1] = -2.89
+        sigma_prior = torch.ones_like(x)
+        sigma_prior[:,:,0] = 0.3
+        sigma_prior[:,:,1] = 0.3
+
+
+        prior_score = -(x-mu_prior)/(sigma_prior**2)
+        #prefactor = (1 - len(scores))*(1-t) * prior_score
+        compositional_scores = prior_score + torch.mean(scores, dim=0).repeat(len(scores), 1, 1)
+        #compositional_scores = compositional_scores.
         scores[:,:,hierarchy] = compositional_scores[:,:,hierarchy]
 
         return scores

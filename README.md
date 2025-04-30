@@ -2,6 +2,7 @@
     <img src="docs/COMPASS_logo.png" width="50%">
 </p>
 
+[![PyPi version](https://img.shields.io/pypi/v/bayes-compass.svg)](https://pypi.org/project/bayes-compass/)
 ![Static Badge](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 ![Static Badge](https://img.shields.io/badge/License-GPLv3-yellow.svg)
 ![Static Badge](https://img.shields.io/badge/Status-Active-green.svg)

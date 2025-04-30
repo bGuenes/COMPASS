@@ -65,7 +65,7 @@ class ModelTransfuser():
         print("All models added to transfuser.")
 
     # Add data to a model
-    def add_data(self, model_name, train_data, val_data=None):
+    def add_data(self, model_name, theta, x, val_theta=None, val_x=None):
         """
         Add training and validation data to a model.
 
@@ -74,14 +74,17 @@ class ModelTransfuser():
             train_data: The training data.
             val_data: The validation data (optional).
         """
-        if val_data is None:
+        if val_theta is None:
             self.data_dict[model_name] = {
-                "train_data": train_data
+                "train_theta": theta,
+                "train_x": x,
             }
         else:
             self.data_dict[model_name] = {
-                "train_data": train_data,
-                "val_data": val_data
+                "train_theta": theta,
+                "train_x": x,
+                "val_theta": val_theta,
+                "val_x": val_x,
             }
         self.trained_models = False
         print(f"Data added to model {model_name}")
@@ -123,7 +126,8 @@ class ModelTransfuser():
         else:
             init_models = []
             for model_name in self.data_dict.keys():
-                self.models_dict[model_name] = SBIm(nodes_size=self.data_dict[model_name]["train_data"].shape[1],
+                nodes_size = self.data_dict[model_name]["train_theta"].shape[1] + self.data_dict[model_name]["train_x"].shape[1]
+                self.models_dict[model_name] = SBIm(nodes_size=nodes_size,
                                                     sde_type=sde_type,
                                                     sigma=sigma,
                                                     hidden_size=hidden_size,
@@ -138,20 +142,13 @@ class ModelTransfuser():
     # ----- Train Models -----
     #############################################
 
-    def train_models(self, condition_mask_data=None, condition_mask_val=None, 
-                batch_size=128, max_epochs=500, lr=1e-3, device="cuda",
+    def train_models(self, batch_size=128, max_epochs=500, lr=1e-3, device="cuda",
                 verbose=False, path=None, early_stopping_patience=20): 
         
         """
         Train the models on the provided data
 
         Args:
-            condition_mask_data: Binary mask indicating observed values (1) and latent values (0)
-                    Shape: (num_samples, num_total_features)
-                    Optional
-            condition_mask_val: Binary mask indicating observed values (1) and latent values (0)
-                    Shape: (num_samples, num_total_features)
-                    Optional
             batch_size: Batch size for training
             max_epochs: Maximum number of training epochs
             lr: Learning rate
@@ -172,12 +169,14 @@ class ModelTransfuser():
 
         for model_name in self.models_dict.keys():
             model = self.models_dict[model_name]
-            data = self.data_dict[model_name]["train_data"]
-            val_data = self.data_dict[model_name].get("val_data", None)
 
-            model.train(data=data, condition_mask_data=condition_mask_data, 
+            theta = self.data_dict[model_name]["train_theta"]
+            x = self.data_dict[model_name]["train_x"]
+            val_theta = self.data_dict[model_name].get("val_theta", None)
+            val_x = self.data_dict[model_name].get("val_x", None)
+
+            model.train(theta=theta, x=x, theta_val=val_theta, x_val=val_x,
                         batch_size=batch_size, max_epochs=max_epochs, lr=lr, device=device,
-                        val_data=val_data, condition_mask_val=condition_mask_val,
                         verbose=verbose, path=path, name=model_name ,early_stopping_patience=early_stopping_patience)
 
             load_path = f"{path}/{model_name}.pt"
@@ -191,7 +190,8 @@ class ModelTransfuser():
     # ----- Model Comparison -----
     #############################################
 
-    def compare(self, observations, condition_mask, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
+    def compare(self, x, err=None, condition_mask=None,
+               timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cuda", verbose=False, method="dpm"):
         """
@@ -222,23 +222,22 @@ class ModelTransfuser():
             print("Models are not trained or provided. Please train the models before comparing.")
             return
         
-        if condition_mask.sum() != observations.shape[1]:
-            print("Condition mask does not match the shape of the observations.\nPlease provide a condition mask fitting to the observed features (1) and latent features (0).")
-            return
-        
         self.stats = {}
         self.model_null_log_probs = {}
         self.softmax = nn.Softmax(dim=0)
         
         for model_name, model in self.models_dict.items():
             self.stats[model_name] = {}
+            if condition_mask is None:
+                condition_mask = torch.cat([torch.zeros(model.nodes_size-x.shape[-1]),torch.ones(x.shape[-1])])
             ####################
             # Posterior sampling
-            posterior_samples = model.sample(data=observations, condition_mask=condition_mask, timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+            posterior_samples = model.sample(x=x, err=err, condition_mask=condition_mask,
+                                            timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
-            posterior_samples = posterior_samples[:,:,(1-condition_mask).bool()].cpu().numpy()
+            posterior_samples = posterior_samples.cpu().numpy()
 
             # MAP estimation
             theta_hat = np.array([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
@@ -249,26 +248,27 @@ class ModelTransfuser():
 
             ####################
             # Null Hypothesis
-            null_samples = model.sample(data=torch.zeros(model.nodes_size), condition_mask=torch.zeros(model.nodes_size), timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+            null_samples = model.sample(timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
             null_samples = null_samples[0,:,condition_mask.bool()].cpu().numpy()
 
             # Log probability of null hypothesis
-            null_log_probs = torch.tensor([self._log_prob(null_samples, obs) for obs in observations])
+            null_log_probs = torch.tensor([self._log_prob(null_samples, obs) for obs in x])
             self.stats[model_name]["log_probs_nullHyp"] = null_log_probs
 
             ####################
             # Likelihood sampling
-            likelihood_samples = model.sample(data=MAP_posterior, condition_mask=(1-condition_mask), timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+            likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=condition_mask,
+                                            timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
-            likelihood_samples = likelihood_samples[:,:,condition_mask.bool()].cpu().numpy()
+            likelihood_samples = likelihood_samples.cpu().numpy()
 
             # Log probability of likelihood
-            log_probs = torch.tensor([self._log_prob(likelihood_samples[i], observations[i]) for i in range(len(observations))])
+            log_probs = torch.tensor([self._log_prob(likelihood_samples[i], x[i]) for i in range(len(x))])
             self.stats[model_name]["log_probs"] = log_probs
             self.stats[model_name]["AIC"] = log_probs.sum() 
 
@@ -298,7 +298,7 @@ class ModelTransfuser():
         hypothesis_test_strength = self._bayes_factor_strength(best_bayes_factor)
 
         model_print_length = len(max(model_names, key=len))
-        print(f"Probabilities of the models after {len(observations)} observations:")
+        print(f"Probabilities of the models after {len(x)} observations:")
         for model in model_names:
             print(f"{model.ljust(model_print_length)}: {100*self.stats[model]['model_prob']:6.2f} %")
         print()

@@ -84,38 +84,39 @@ class ScoreBasedInferenceModel(nn.Module):
     # ----- Training -----
     #############################################
     
-    def train(self, data, condition_mask_data=None, 
+    def train(self, theta, x, theta_val=None, x_val=None, 
                 batch_size=128, max_epochs=500, lr=1e-3, device="cpu", 
-                val_data=None, condition_mask_val=None, 
                 verbose=True, path=None, name="Model", early_stopping_patience=20):
         """
         Train the model on the provided data
 
         Args:
-            data: Training data : Tensor of shape (num_samples, num_features)
-            condition_mask_data: Binary mask indicating observed values (1) and latent values (0)
-                    Shape: (num_samples, num_total_features)
-                    Optional
+            theta: Training Parameters 
+            x: Training observations
             batch_size: Batch size for training
             max_epochs: Maximum number of training epochs
             lr: Learning rate
             device: Device to run training on
                     if "cuda", training will be distributed across all available GPUs
-            val_data: Validation data : Tensor of shape (num_samples, num_features)
-            condition_mask_val: Binary mask indicating observed values (1) and latent values (0)
-                    Shape: (num_samples, num_total_features)
-                    Optional
+            theta_val: Validation Parameters
+            x_val: Validation observations
             verbose: Whether to show training progress
             path: Path to save model
             early_stopping_patience: Number of epochs to wait before early stopping
         """
+
+        # Combine theta and x into a single tensor
+        # train_data: (num_samples, node_size)
+        train_data = torch.cat([theta, x], dim=1)
+        if theta_val is not None and x_val is not None:
+            val_data = torch.cat([theta_val, x_val], dim=1)
 
         if device == "cuda":
             world_size = torch.cuda.device_count()
         else :
             world_size = 1
 
-        self.trainer.train(world_size=world_size, train_data=data, condition_mask_data=condition_mask_data, val_data=val_data, condition_mask_val=condition_mask_val,
+        self.trainer.train(world_size=world_size, train_data=train_data, val_data=val_data,
                             max_epochs=max_epochs, early_stopping_patience=early_stopping_patience, batch_size=batch_size, lr=lr,
                             path=path, name=name, device=device, verbose=verbose)
 
@@ -123,7 +124,8 @@ class ScoreBasedInferenceModel(nn.Module):
     # ----- Sample -----
     #############################################
         
-    def sample(self, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
+    def sample(self, theta=None, x=None, err=None, condition_mask=None,
+               timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cpu", verbose=True, method="dpm", save_trajectory=False):
         """
@@ -152,7 +154,29 @@ class ScoreBasedInferenceModel(nn.Module):
             save_trajectory: Whether to save the intermediate denoising trajectory
         """
 
-        
+        # Combine data and create condition mask
+        # 0 for latent values, 1 for observed values
+        data = None
+        if theta is None and x is not None:
+            # If only x is provided, use it as the data
+            data = x
+            if condition_mask is None:
+                condition_mask = torch.cat([torch.zeros(self.nodes_size-data.shape[-1]),torch.ones(data.shape[-1])])
+        if x is None and theta is not None:
+            # If only theta is provided, use it as the data
+            data = theta
+            if condition_mask is None:
+                condition_mask = torch.cat([torch.ones(data.shape[-1]),torch.zeros(self.nodes_size-data.shape[-1])])
+        if theta is not None and x is not None:
+            # Both theta and x are provided, raise an error
+            raise ValueError("Both theta and x are provided!\nPlease provide theta to sample from the Likelihood OR x to sample from the Posterior.")
+        if data is None:
+            # If neither theta nor x is provided, infer both
+            condition_mask = torch.zeros(self.nodes_size)
+            data = torch.zeros(1, self.nodes_size)
+            
+
+        # Choose device        
         if device == "cuda":
             # Run sampling on all available GPUs
             world_size = torch.cuda.device_count()
@@ -161,7 +185,7 @@ class ScoreBasedInferenceModel(nn.Module):
             world_size = 1
             
         if multi_obs_inference == False:
-            samples = self.sampler.sample(world_size=world_size, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
+            samples = self.sampler.sample(world_size=world_size, data=data, err=err, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
                                     order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                     verbose=verbose, method=method, save_trajectory=save_trajectory)
             
@@ -171,6 +195,9 @@ class ScoreBasedInferenceModel(nn.Module):
                                       order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                       verbose=verbose, method=method, save_trajectory=save_trajectory)
 
+        # just return the sampled values
+        samples = samples[:,:,(1-condition_mask).bool()] 
+        
         return samples
     
     #############################################

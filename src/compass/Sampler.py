@@ -9,16 +9,23 @@ import datetime
 import os
 
 class TensorTupleDataset(Dataset):
-    def __init__(self, tensor1, tensor2):
+    def __init__(self, tensor1, tensor2, err=None):
+
         self.tensor1 = tensor1
         self.tensor2 = tensor2
+        self.err = err
         assert len(tensor1) == len(tensor2), "Tensors must have the same length"
         
     def __len__(self):
         return len(self.tensor1)
     
     def __getitem__(self, idx):
-        return self.tensor1[idx], self.tensor2[idx], idx
+        if self.err is not None:
+            err = self.err[idx]
+        else:
+            err = torch.zeros_like(self.tensor1[idx])
+
+        return self.tensor1[idx], self.tensor2[idx], idx, err
 
 #################################################################################################
 # ////////////////////////////////////////// Sampling //////////////////////////////////////////
@@ -33,7 +40,8 @@ class Sampler():
     # ----- Main Sampling Loop -----
     #############################################
     
-    def sample(self, world_size, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None,
+    def sample(self, world_size, data, err=None, condition_mask=None, 
+               timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cpu", verbose=True, method="dpm", save_trajectory=False, result_dict=None):
         """
@@ -65,7 +73,7 @@ class Sampler():
             method: Sampling method to use (euler, dpm)
             save_trajectory: Whether to save the intermediate denoising trajectory
         """
-        
+
         # Set parameters
         self.world_size = world_size
         self.timesteps = timesteps
@@ -86,18 +94,18 @@ class Sampler():
         if self.world_size > 1:
             manager = mp.Manager()
             result_dict = manager.dict()
-            mp.spawn(self._sample_loop, args=(data, condition_mask, num_samples, result_dict), nprocs=self.world_size, join=True)
+            mp.spawn(self._sample_loop, args=(data, err, condition_mask, num_samples, result_dict), nprocs=self.world_size, join=True)
             samples = result_dict.get('samples', None)
             manager.shutdown()
 
         else:
             rank = 0
             self.device = device
-            samples = self._sample_loop(rank, data, condition_mask, num_samples)
+            samples = self._sample_loop(rank, data, err, condition_mask, num_samples)
 
         return samples
    
-    def _sample_loop(self, rank, data, condition_mask, num_samples, result_dict=None):
+    def _sample_loop(self, rank, data, err, condition_mask, num_samples, result_dict=None):
         # Set rank
         self.rank = rank
         self.verbose = self.verbose if self.rank == 0 else False
@@ -109,7 +117,7 @@ class Sampler():
             self.model = self.SBIm.model.to(self.device)
         
         # Check data structure
-        data_loader, self.num_observations = self._check_data_structure(data, condition_mask)
+        data_loader, self.num_observations = self._check_data_structure(data, condition_mask, err)
 
         # Set up timesteps
         self.timesteps_list = torch.linspace(1., self.eps, self.timesteps, device=self.device)
@@ -219,7 +227,7 @@ class Sampler():
                 
         return score
 
-    def _check_data_shape(self, data, condition_mask):
+    def _check_data_shape(self, data, condition_mask, err):
         # Check data shape
         # Required shape: (num_samples, num_features)
         if len(data.shape) == 1:
@@ -230,13 +238,18 @@ class Sampler():
         if len(condition_mask.shape) == 1:
             condition_mask = condition_mask.unsqueeze(0).repeat(data.shape[0], 1)
 
-        return data, condition_mask
+        # Check error shape
+        # Required shape: (num_samples, num_features)
+        if err is not None and len(err.shape) == 1:
+            err = err.unsqueeze(0).repeat(data.shape[0], 1)
 
-    def _check_data_structure(self, data, condition_mask, batch_size=1e3):
+        return data, condition_mask, err
+
+    def _check_data_structure(self, data, condition_mask, err, batch_size=1e3):
         # Convert data to DataLoader
         
-        data, condition_mask = self._check_data_shape(data, condition_mask)
-        dataset_cond = TensorTupleDataset(data, condition_mask)
+        data, condition_mask, err = self._check_data_shape(data, condition_mask, err)
+        dataset_cond = TensorTupleDataset(data, condition_mask, err)
         
         # Use DistributedSampler for multi-GPU
         if self.world_size > 1:
@@ -264,12 +277,18 @@ class Sampler():
 
     def _prepare_data(self, batch, num_samples, device):
         # Expand data and condition mask to match num_samples
-        data, condition_mask, idx = batch
+        data, condition_mask, idx, err = batch
         data = data.to(device)
         condition_mask = condition_mask.to(device)
 
         data = data.unsqueeze(1).repeat(1,num_samples,1)
         condition_mask = condition_mask.unsqueeze(1).repeat(1,num_samples,1)
+        err = err.unsqueeze(1).repeat(1,num_samples,1)
+
+        if err is not None:
+            # Add scatter around the data
+            err = err.to(device)
+            data = torch.normal(data, err)
 
         joint_data = torch.zeros_like(condition_mask)
         if torch.sum(condition_mask==1).item()!=0:
@@ -284,7 +303,7 @@ class Sampler():
 
         random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * torch.randn_like(data) * (1-condition_mask)
 
-        data += random_noise_samples
+        data += random_noise_samples     
         return data
   
     #############################################
