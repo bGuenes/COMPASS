@@ -260,7 +260,7 @@ class ModelTransfuser():
 
             ####################
             # Likelihood sampling
-            likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=condition_mask,
+            likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=(1-condition_mask),
                                             timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,

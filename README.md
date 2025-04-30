@@ -51,8 +51,7 @@ MTf.train_models()
 
 # Compare Posterior Model Probabilities
 observations = load_your_observations
-condition_mask = specify_condition_mask
-MTf.compare(observations, condition_mask)
+MTf.compare(x=observations, err=observations_err)
 
 stats = MTf.stats
 
