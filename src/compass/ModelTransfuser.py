@@ -366,7 +366,7 @@ class ModelTransfuser():
     # ----- Plotting -----
     ##############################################
 
-    def plots(self, stats_dict=None, path=None, show=True):
+    def plots(self, stats_dict=None, n_models=10, path=None, show=True):
 
         # Check path
         if path is None:
@@ -378,17 +378,21 @@ class ModelTransfuser():
         if stats_dict is None:
             stats_dict = self.stats
 
-        model_names = list(self.stats.keys())
-        model_probs = torch.tensor([self.stats[model]["model_prob"] for model in model_names])
-        model_log_probs = torch.stack([self.stats[model]["log_probs"] for model in model_names])
-        model_obs_probs = torch.stack([self.stats[model]["obs_probs"] for model in model_names])
+        # Sort models by AIC
+        sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["log_probs"].median(),reverse=True)
+        stats_dict = {model: stats_dict[model] for model in sorted_models}
+
+        model_names = list(stats_dict.keys())
+        model_probs = torch.tensor([stats_dict[model]["model_prob"] for model in model_names])
+        model_log_probs = torch.stack([stats_dict[model]["log_probs"] for model in model_names])
+        model_obs_probs = torch.stack([stats_dict[model]["obs_probs"] for model in model_names])
 
         sns.set_context("paper")
 
         # Plot violin plot of model probabilities
         plt.figure(figsize=(10, 5))
-        sns.violinplot(data=model_obs_probs.T)
-        plt.xticks(ticks=range(len(model_names)), labels=model_names)
+        sns.violinplot(data=model_obs_probs.T[:,:n_models])
+        plt.xticks(ticks=range(n_models), labels=model_names[:n_models], rotation=45, ha='right')
         plt.title("Model Probabilities")
         plt.xlabel("Model")
         plt.ylabel("Probability of Observations")
@@ -400,11 +404,11 @@ class ModelTransfuser():
 
         # Plot updated model probabilities
         plt.figure(figsize=(10, 5))
-        plt.plot(torch.arange(1, model_log_probs.shape[1]+1).repeat(len(model_names),1).T,
-                    torch.nn.functional.softmax(model_log_probs.cumsum(1),0).T,
-                    label=model_names, marker='o', markersize=3, linewidth=1)
+        plt.plot(torch.arange(1, model_log_probs.shape[1]+1).repeat(n_models,1).T,
+                    torch.nn.functional.softmax(model_log_probs.cumsum(1),0).T[:,:n_models],
+                    label=model_names[:n_models], marker='o', markersize=3, linewidth=1)
         plt.legend()
-        plt.xscale("log")
+        #plt.xscale("log")
         plt.title("Updated Model Probabilities")
         plt.xlabel("Number of observations")
         plt.ylabel("Model Probability")
