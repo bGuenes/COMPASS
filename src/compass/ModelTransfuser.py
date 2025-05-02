@@ -366,7 +366,7 @@ class ModelTransfuser():
     # ----- Plotting -----
     ##############################################
 
-    def plots(self, stats_dict=None, n_models=10, path=None, show=True):
+    def plots(self, stats_dict=None, n_models=10, sort="median", path=None, show=True):
 
         # Check path
         if path is None:
@@ -378,8 +378,19 @@ class ModelTransfuser():
         if stats_dict is None:
             stats_dict = self.stats
 
-        # Sort models by AIC
-        sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["log_probs"].median(),reverse=True)
+        # Sort models by log_probs
+        if sort == "median":
+            sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["log_probs"].median(),reverse=True)
+        elif sort == "mean":
+            sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["log_probs"].mean(),reverse=True)
+        elif type(sort) == list:
+            sorted_models = sort
+            # add the remaining models to the end of the list for correct probability calculation
+            for model in stats_dict.keys():
+                if model not in sorted_models:
+                    sorted_models.append(model)
+        elif sort == "none":
+            sorted_models = list(stats_dict.keys())
         stats_dict = {model: stats_dict[model] for model in sorted_models}
 
         model_names = list(stats_dict.keys())
