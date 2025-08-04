@@ -122,7 +122,11 @@ class Sampler():
         # Set up timesteps
         self.timesteps_list = torch.linspace(1., self.eps, self.timesteps, device=self.device)
         self.dt = self.timesteps_list[0] - self.timesteps_list[1]
-        
+
+        # Set up Attention Interpretation
+        self.attn_weights_time = self.timesteps_list[self.timesteps // 2]   # Interpretation at 50% of diffusion process
+        self.all_attn_weights = []
+
         # Loop over data samples
         all_samples = []
         indices = []
@@ -148,6 +152,9 @@ class Sampler():
             # Store samples
             all_samples.append(samples)
             indices.append(idx)
+
+            # Turn Attention weights into tensor
+            self.all_attn_weights = torch.stack(self.all_attn_weights, dim=0).to("cpu")
             
         # Collect results from all processes if distributed
         if self.world_size > 1:
@@ -214,7 +221,13 @@ class Sampler():
         """Get score estimate with optional classifier-free guidance"""
         # Get conditional score
         with torch.no_grad():
-            score_cond = self.model(x=x, t=t, c=condition_mask)
+            # Check if Attention weights should be returned
+            if t.item() == self.attn_weights_time:
+                score_cond, attn_weights = self.model(x=x, t=t, c=condition_mask, return_attn_weights=True)
+                self.all_attn_weights.append(attn_weights)
+            else:
+                score_cond = self.model(x=x, t=t, c=condition_mask)
+
             score_cond = self.SBIm.output_scale_function(t, score_cond)
             
             # Apply classifier-free guidance if requested

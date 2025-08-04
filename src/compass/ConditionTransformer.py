@@ -139,7 +139,7 @@ class TransformerBlock(nn.Module):
             nn.Linear(time_embedding_size, 6 * nodes_size * hidden_size, bias=True)
         )
     
-    def forward(self, x, c, t):
+    def forward(self, x, c, t, return_attn_weights=False):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t).reshape(-1, self.nodes_size, 6*self.hidden_size).chunk(6, dim=-1)
         
         x_norm = modulate(self.norm1(x), shift_msa, scale_msa)
@@ -149,10 +149,20 @@ class TransformerBlock(nn.Module):
         # Attention mask to prevent latent nodes from attending to other latent nodes
         attn_mask = (1-c).type(torch.bool).unsqueeze(1).repeat(self.num_heads, self.nodes_size, 1)
 
-        x = x + gate_msa * self.attn(q, k, v, need_weights=False, attn_mask=attn_mask)[0]
+        # Self-Attention
+        if return_attn_weights:
+            # Return attention weights for interpretability
+            attn_output, attn_weights = self.attn(q, k, v, need_weights=True, attn_mask=attn_mask)
+        else:
+            attn_output = self.attn(q, k, v, need_weights=False, attn_mask=attn_mask)[0]
+
+        x = x + gate_msa * attn_output
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
-        return x
+        if return_attn_weights:
+            return x, attn_weights
+        else:
+            return x
 
 #############################################
 # ----- Final Layer -----
@@ -237,21 +247,30 @@ class ConditionTransformer(nn.Module):
         # nn.init.constant_(self.final_layer.linear.weight, 0)
         # nn.init.constant_(self.final_layer.linear.bias, 0)
     
-    def forward(self, x, t, c):
+    def forward(self, x, t, c, return_attn_weights=False):
         """
         Forward pass of ConditionTransformer.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         c: (N,) tensor of data conditions (latent or conditioned)
+        return_attn_weights: 
         """
+
         x = self.x_embedder(x)
         t = self.t_embedder(t)
-        #c_embed = self.c_embedder(c.type(torch.int))
-        #t += c_embed
-       
-        for block in self.blocks:
-            x = block(x, c, t)
+
+        if return_attn_weights:
+            all_attn_weights = []
+            for block in self.blocks:
+                x, attn_weights = block(x, c, t, return_attn_weights)
+                all_attn_weights.append(attn_weights.mean(0))
+        else:
+            for block in self.blocks:
+                x = block(x, c, t, return_attn_weights)
         
         x = self.final_layer(x, t)
 
-        return x
+        if return_attn_weights:
+            return x, all_attn_weights
+        else:
+            return x

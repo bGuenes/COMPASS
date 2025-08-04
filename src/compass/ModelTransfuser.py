@@ -12,6 +12,8 @@ from scipy import optimize
 from scipy.stats import norm, gaussian_kde
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import PowerNorm
+
 import seaborn as sns
 
 from .ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
@@ -195,27 +197,27 @@ class ModelTransfuser():
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cuda", verbose=False, method="dpm"):
         """
-        Compare the models on the provided observations
+        Compare the models on the provided observations.
+        The results are saved in the self.stats dictionary and the provided path.
 
         Args:
-            observations: The observations to compare the models on
-            condition_mask: Binary mask indicating observed values (1) and latent values (0)
-                    Shape: (num_samples, num_total_features)
-                    Optional
-            timesteps: Number of timesteps for the model
-            eps: Epsilon value for the model
-            num_samples: Number of samples to generate
-            cfg_alpha: CFG alpha value for the model
+            observations:   The observations to compare the models on
+            condition_mask: (optional) Binary mask indicating observed values (1) and latent values (0)
+                                Shape: (num_samples, num_total_features)
+            timesteps:      Number of timesteps for the model
+            eps:            Epsilon value for the model
+            num_samples:    Number of samples to generate
+            cfg_alpha:      CFG alpha value for the model
             multi_obs_inference: Whether to use multi-observation inference
-            hierarchy: Hierarchy for the model
-            order: Order of the model
-            snr: Signal-to-noise ratio for the model
+            hierarchy:      Hierarchy for the model
+            order:          Order of the model
+            snr:            Signal-to-noise ratio for the model
             corrector_steps_interval: Corrector steps interval for the model
-            corrector_steps: Corrector steps for the model
+            corrector_steps:Corrector steps for the model
             final_corrector_steps: Final corrector steps for the model
-            device: Device to run inference on
-            verbose: Whether to show inference progress
-            method: Method to use for inference
+            device:         Device to run inference on
+            verbose:        Whether to show inference progress
+            method:         Method to use for inference
         """
 
         if not self.trained_models:
@@ -226,10 +228,13 @@ class ModelTransfuser():
         self.model_null_log_probs = {}
         self.softmax = nn.Softmax(dim=0)
         
+        # Loop over all models
         for model_name, model in self.models_dict.items():
             self.stats[model_name] = {}
             if condition_mask is None:
                 condition_mask = torch.cat([torch.zeros(model.nodes_size-x.shape[-1]),torch.ones(x.shape[-1])])
+            self.condition_mask = condition_mask
+
             ####################
             # Posterior sampling
             posterior_samples = model.sample(x=x, err=err, condition_mask=condition_mask,
@@ -238,6 +243,9 @@ class ModelTransfuser():
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
             posterior_samples = posterior_samples.cpu().numpy()
+
+            # Inference Attention weights
+            self.stats[model_name]["attn_weights"] = model.sampler.all_attn_weights
 
             # MAP estimation
             theta_hat = np.array([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
@@ -274,6 +282,7 @@ class ModelTransfuser():
 
             # Null Hypothesis test
             self.stats[model_name]["Bayes_Factor_Null_Hyp"] = log_probs.sum() - null_log_probs.sum()
+
 
         # Calculate Model Probabilitys from AICs
         aics = [self.stats[model_name]["AIC"] for model_name in self.stats.keys()]
@@ -366,7 +375,23 @@ class ModelTransfuser():
     # ----- Plotting -----
     ##############################################
 
-    def plots(self, stats_dict=None, n_models=10, sort="median", path=None, show=True):
+    def plot_model_comp(self, stats_dict=None, n_models=10, sort="median", path=None, show=True):
+        """
+        Plot the results from the Model Comparison.
+        Saves the Violin plots for individual model probability and the cumulative model probability of all observations.
+
+        Args:
+            stats_dict: (dict)(optional) Dictionary with the comparison results. 
+                            If not provided, it uses the results from the `compare()` call.
+            n_models:   (int) Number of models to plot in the comparison.
+            sort:       (string) How to sort the models for the plots.
+                            median - (default) median model probability of all observations
+                            mean   -  mean model probability of all observations
+                            none   - the order the models are defined in
+            path:       (string)(optional) The path the plots are saved to.
+                            If not provided, the plots are not saved.
+            show:       (bool) Whether to show the created plots or not.
+        """
 
         # Check path
         if path is None:
@@ -413,19 +438,181 @@ class ModelTransfuser():
             plt.show()
         plt.close()
 
-        # Plot updated model probabilities
+        # Plot cumulative model probabilities
         plt.figure(figsize=(10, 5))
         plt.plot(torch.arange(1, model_log_probs.shape[1]+1).repeat(n_models,1).T,
                     torch.nn.functional.softmax(model_log_probs.cumsum(1),0).T[:,:n_models],
                     label=model_names[:n_models], marker='o', markersize=3, linewidth=1)
         plt.legend()
         #plt.xscale("log")
-        plt.title("Updated Model Probabilities")
+        plt.title("Cumulative Model Probabilities")
         plt.xlabel("Number of observations")
         plt.ylabel("Model Probability")
         plt.grid(True)
         if path is not None:
-            plt.savefig(f"{path}/model_probs_updated.png")
+            plt.savefig(f"{path}/model_probs_cumulative.png")
         if show:
             plt.show()
         plt.close()
+
+    def plot_interpretation(self, stats_dict=None, labels=None, path=None, show=True):
+        """
+        Plot the attention weights for the best performing model for interpretability.
+
+        Args:
+            stats_dict: (dict)(optional) Dictionary with the comparison results. 
+                            If not provided, it uses the results from the `compare()` call.
+            labels:     (list of strings)(optional) List with the names of the parameters and data points.
+            path:       (string)(optional) The path the plots are saved to.
+                            If not provided, the plots are not saved.
+            show:       (bool) Whether to show the created plots or not.
+        """
+
+        # Check path
+        if path is None:
+            path = self.path
+            if not os.path.exists(path):
+                os.makedirs(path)
+
+        # Check stats_dict
+        if stats_dict is None:
+            stats_dict = self.stats
+
+        # Get the best performing model
+        best_model = sorted(stats_dict, key=lambda x: stats_dict[x]["AIC"], reverse=True)[0]
+
+        def _plot_heatmap(data, xlabels, ylabels, name, show):
+            # Set annotations in the attention blocks
+            annotation_mask = data > 0.1
+            annot = np.where(annotation_mask, data.round(2), np.nan)  # Use NaN to hide annotations below threshold
+            annotations = annot.astype(str)
+            annotations[np.isnan(annot)] = ""
+
+            # Create figure
+            plt.figure(figsize=(12,6))
+            ax = sns.heatmap(
+                data,
+                xticklabels=xlabels,
+                yticklabels=ylabels,
+                cmap='magma',
+                linewidths=.5,
+                square=True,
+                annot=annotations,
+                fmt='',
+            ) 
+
+            ax.set_xlabel("Keys", fontsize=25)
+            ax.set_ylabel("Queries", fontsize=25)
+            plt.xticks(rotation=0, ha='center')
+            plt.yticks(rotation=0)
+            plt.tight_layout()
+            if path is not None:
+                plt.savefig(f"{path}/{name}.png")
+            if show:
+                plt.show()
+            plt.close()
+
+        ####################
+        # Avg Attention between all Tokens
+
+        data = stats_dict[best_model]["attn_weights"].mean(0).numpy()
+
+        # Labels
+        if labels is None:
+            labels = list(np.arange(0, data.shape[0]+1).astype(str))
+
+        _plot_heatmap(data, labels+"Bias KV", labels, "avg_attention_map", show)
+        
+        ####################
+        # Avg Attention between informative Tokens
+
+        data = stats_dict[best_model]["attn_weights"].mean(0).numpy()
+        data = data[np.ix_(~self.condition_mask.bool(), self.condition_mask.bool())]
+
+        _plot_heatmap(data, labels[self.condition_mask.bool()]+"Bias KV", labels[(1-self.condition_mask).bool()], "selected_attention_map", show)
+
+        ####################
+        # Layer by Layer Attention
+
+        data = stats_dict[best_model]["attn_weights"].numpy()
+
+        # Define labels
+        xlabels = labels[self.condition_mask.bool()] + ["Bias KV"]
+        ylabels = labels[~self.condition_mask.bool()]
+
+        # Create a list to hold the data for each layer
+        plot_data = []
+        for layer_weights in data:
+            avg_attention_map = layer_weights.squeeze(0)
+            
+            param_attention_subset = avg_attention_map[np.ix_(~self.condition_mask.bool(), self.condition_mask.bool())]
+            plot_data.append(param_attention_subset)
+
+        # Set up Figure   
+        nrows = self.models_dict[best_model].depth
+        fig, axes = plt.subplots(
+            nrows=nrows, 
+            ncols=1, 
+            figsize=(12, 3*nrows),
+            sharex=True
+        )
+
+        # Set up colours
+        vmin, vmax = 0.0, 1.0
+        norm = PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax) 
+
+        # Loop through each layer and plot the heatmap
+        for i, ax in enumerate(axes):
+            # Get the data for the current layer
+            data_to_plot = plot_data[i]
+
+            # Create a boolean mask for annotations. Only show values > 0.1
+            annotation_mask = data_to_plot > 0.1
+            annot = np.where(annotation_mask, data_to_plot.round(2), np.nan)  # Use NaN to hide annotations below threshold
+            annotations = annot.astype(str)
+            annotations[np.isnan(annot)] = ""
+            
+            # Create the heatmap on the current subplot axis `ax`
+            sns.heatmap(
+                data_to_plot,
+                xticklabels=xlabels,
+                yticklabels=ylabels,
+                cmap='magma',
+                linewidths=.5,
+                ax=ax,
+                cbar=False,
+                vmin=vmin,
+                vmax=vmax,
+                norm=norm,
+                annot=annotations,
+                fmt="",
+            )
+            
+            # Set titles and labels for each subplot
+            ax.set_title(f"Layer {i+1}", fontsize=25, loc='left')
+            ax.tick_params(axis='y', rotation=0, labelsize=12) # Rotate y-axis labels for better readability
+
+            # Only show x-axis labels on the very last plot
+            if i == len(axes) - 1:
+                #ax.set_xlabel("Information Source (Observations and Bias)", fontsize=14)
+                ax.tick_params(axis='x', rotation=0, labelsize=12)
+            else:
+                ax.set_xlabel('')
+
+        # Add the single, shared color bar
+        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7]) # [left, bottom, width, height]
+
+        # Create the color bar using a "dummy" mappable object
+        sm = plt.cm.ScalarMappable(cmap='magma', norm=norm)
+        sm._A = [] # Dummy empty array
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.set_label('Attention Weight', fontsize=20)
+
+        fig.tight_layout(rect=[0, 0, 0.9, 0.95]) # Adjust rect to make space for suptitle and cbar
+
+        if path is not None:
+            plt.savefig(f"{path}/layer_attention.png")
+        if show:
+            plt.show()
+        plt.close()
+        
