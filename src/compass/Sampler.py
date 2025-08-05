@@ -96,6 +96,7 @@ class Sampler():
             result_dict = manager.dict()
             mp.spawn(self._sample_loop, args=(data, err, condition_mask, num_samples, result_dict), nprocs=self.world_size, join=True)
             samples = result_dict.get('samples', None)
+            self.all_attn_weights = result_dict.get('attn_weights', None)
             manager.shutdown()
 
         else:
@@ -124,6 +125,7 @@ class Sampler():
         self.dt = self.timesteps_list[0] - self.timesteps_list[1]
 
         # Set up Attention Interpretation
+        self.return_attn_weights = True
         self.attn_weights_time = self.timesteps_list[self.timesteps // 2]   # Interpretation at 50% of diffusion process
         self.all_attn_weights = []
 
@@ -152,9 +154,6 @@ class Sampler():
             # Store samples
             all_samples.append(samples)
             indices.append(idx)
-
-            # Turn Attention weights into tensor
-            self.all_attn_weights = torch.stack(self.all_attn_weights, dim=0).to("cpu")
             
         # Collect results from all processes if distributed
         if self.world_size > 1:
@@ -165,6 +164,7 @@ class Sampler():
 
         else:
             samples = torch.cat(all_samples, dim=0)
+            self.all_attn_weights = torch.stack(self.all_attn_weights, dim=0).to("cpu")
             return samples
 
     #############################################
@@ -195,24 +195,29 @@ class Sampler():
         # Convert the list of tensors to a single tensor
         samples = torch.cat(all_samples, dim=0).to(self.device)
         indices = torch.cat(indices, dim=0).to(self.device)
+        all_attn_weights = torch.cat(self.all_attn_weights, dim=0).to(self.device)
 
         # Create empty tensors to gather results across processes
         gathered_samples = [torch.zeros_like(samples) for _ in range(self.world_size)]
         gathered_idx = [torch.zeros_like(indices) for _ in range(self.world_size)]
+        gathered_attn_weights = [torch.zeros_like(all_attn_weights) for _ in range(self.world_size)]
 
         # Gather data from all processes
         dist.all_gather(gathered_samples, samples)
         dist.all_gather(gathered_idx, indices)
+        dist.all_gather(gathered_attn_weights, all_attn_weights)
 
         if self.rank == 0:
             # Sort results by index
             gathered_idx = torch.cat(gathered_idx, dim=0)
             gathered_samples = torch.cat(gathered_samples, dim=0)
+            gathered_attn_weights = torch.cat(gathered_attn_weights, dim=0)
             unique_sort_idx = [(gathered_idx == i).nonzero()[0,0].tolist() for i in gathered_idx.unique()]
             samples = gathered_samples[unique_sort_idx]
 
             result_dict['samples'] = samples.cpu()
-        
+            result_dict['attn_weights'] = gathered_attn_weights.cpu()
+
     #############################################
     # ----- Standard Functions -----
     #############################################
@@ -222,9 +227,10 @@ class Sampler():
         # Get conditional score
         with torch.no_grad():
             # Check if Attention weights should be returned
-            if t.item() == self.attn_weights_time:
+            if t.item() == self.attn_weights_time and self.return_attn_weights:
                 score_cond, attn_weights = self.model(x=x, t=t, c=condition_mask, return_attn_weights=True)
                 self.all_attn_weights.append(attn_weights)
+                self.return_attn_weights = False  # Only return once per sample
             else:
                 score_cond = self.model(x=x, t=t, c=condition_mask)
 

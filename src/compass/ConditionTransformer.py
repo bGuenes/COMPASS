@@ -54,11 +54,16 @@ class TimestepEmbedder(nn.Module):
     def timestep_embedding(t, dim, max_period=10000):
         """
         Create sinusoidal timestep embeddings.
-        :param t: a 1-D Tensor of N indices, one per batch element.
-                          These may be fractional.
-        :param dim: the dimension of the output.
-        :param max_period: controls the minimum frequency of the embeddings.
-        :return: an (N, D) Tensor of positional embeddings.
+
+        Args:
+            t: a 1-D Tensor of N indices, one per batch element.
+               These may be fractional.
+            dim: the dimension of the output.
+            max_period: controls the minimum frequency of the embeddings.
+        
+        Returns:
+            embedding:  (tensor) The sinusoidal embedding of timestep `t`.
+                        Shape: (N, dim) where N is the batch size.
         """
 
         half = dim // 2
@@ -74,6 +79,16 @@ class TimestepEmbedder(nn.Module):
         return embedding
 
     def forward(self, t):
+        """
+        Forward pass of TimestepEmbedder.
+        
+        Args:
+            t: (N,) tensor of diffusion timesteps, where N is the batch size.
+        
+        Returns:
+            t_emb: (N, frequency_embedding_size) tensor of embedded timesteps.
+        """
+
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
@@ -244,16 +259,19 @@ class ConditionTransformer(nn.Module):
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        # nn.init.constant_(self.final_layer.linear.weight, 0)
-        # nn.init.constant_(self.final_layer.linear.bias, 0)
     
     def forward(self, x, t, c, return_attn_weights=False):
         """
         Forward pass of ConditionTransformer.
-        x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
-        t: (N,) tensor of diffusion timesteps
-        c: (N,) tensor of data conditions (latent or conditioned)
-        return_attn_weights: 
+        Args:
+            x:   (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
+            t:   (N,) tensor of diffusion timesteps
+            c:   (N,) tensor of data conditions (latent or conditioned)
+            return_attn_weights: (bool) Whether to return attention weights for interpretability.
+        
+        Returns:
+            x:   (N, C, H, W) tensor of transformed outputs
+            all_attn_weights: (optional) List of attention weights from each block if return_attn_weights is True.
         """
 
         x = self.x_embedder(x)
@@ -271,6 +289,7 @@ class ConditionTransformer(nn.Module):
         x = self.final_layer(x, t)
 
         if return_attn_weights:
+            all_attn_weights = torch.stack(all_attn_weights, dim=0)
             return x, all_attn_weights
         else:
             return x

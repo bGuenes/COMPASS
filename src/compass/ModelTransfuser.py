@@ -18,6 +18,10 @@ import seaborn as sns
 
 from .ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
 
+from itertools import compress
+import warnings
+warnings.filterwarnings('ignore')
+
 #################################################################################################
 # ///////////////////////////////////// Model Comparison ////////////////////////////////////////
 #################################################################################################
@@ -201,10 +205,16 @@ class ModelTransfuser():
         The results are saved in the self.stats dictionary and the provided path.
 
         Args:
-            observations:   The observations to compare the models on
-            condition_mask: (optional) Binary mask indicating observed values (1) and latent values (0)
+            x:              The observations to compare the models on.
+                                Shape: (num_samples, num_obs_features)
+            err:            (optional) The observation uncertainties. If not provided, it is assumed to be zero.
+                                Shape: (num_samples, num_obs_features)
+            condition_mask: (optional) Binary mask indicating observed values (1) and latent values (0).
+                                Should be provided if the there are missing observations in the data.
+                                If not provided, it is assumed, that 
                                 Shape: (num_samples, num_total_features)
-            timesteps:      Number of timesteps for the model
+            timesteps:      Number of timesteps for the diffusion process.
+                                (default) - 50 timesteps
             eps:            Epsilon value for the model
             num_samples:    Number of samples to generate
             cfg_alpha:      CFG alpha value for the model
@@ -213,11 +223,13 @@ class ModelTransfuser():
             order:          Order of the model
             snr:            Signal-to-noise ratio for the model
             corrector_steps_interval: Corrector steps interval for the model
-            corrector_steps:Corrector steps for the model
+            corrector_steps: Corrector steps for the model
             final_corrector_steps: Final corrector steps for the model
             device:         Device to run inference on
-            verbose:        Whether to show inference progress
-            method:         Method to use for inference
+            verbose:        (bool) Whether to show inference progress
+            method:         (string) Method used to solve the SDE during inference.
+                                "dpm"   - (default) Using the DPM-Solver for infernce with order 'order'
+                                "euler" - Using the Euler-Maruyama method for inference
         """
 
         if not self.trained_models:
@@ -488,24 +500,46 @@ class ModelTransfuser():
             annotations = annot.astype(str)
             annotations[np.isnan(annot)] = ""
 
+            # Set up colours
+            vmin, vmax = 0.0, 1.0
+            norm = PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax) 
+
             # Create figure
-            plt.figure(figsize=(12,6))
+            fig = plt.figure(figsize=(12,6))
             ax = sns.heatmap(
                 data,
                 xticklabels=xlabels,
                 yticklabels=ylabels,
                 cmap='magma',
+                cbar=False,
                 linewidths=.5,
                 square=True,
+                vmin=vmin,
+                vmax=vmax,
                 annot=annotations,
+                norm=norm,
                 fmt='',
+                annot_kws={"size": 35 / np.sqrt(len(data))}
             ) 
 
             ax.set_xlabel("Keys", fontsize=25)
             ax.set_ylabel("Queries", fontsize=25)
-            plt.xticks(rotation=0, ha='center')
-            plt.yticks(rotation=0)
-            plt.tight_layout()
+            plt.xticks(rotation=0, ha='center', fontsize=20)
+            plt.yticks(rotation=0, fontsize=20)
+
+            # Add the single, shared color bar
+            cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7]) # [left, bottom, width, height]
+
+            # Create the color bar using a "dummy" mappable object
+            sm = plt.cm.ScalarMappable(cmap='magma', norm=norm)
+            sm._A = [] # Dummy empty array
+            cbar = fig.colorbar(sm, cax=cbar_ax)
+            cbar.set_label('Attention Weight', fontsize=20)
+
+            fig.tight_layout(rect=[0, 0, 0.9, 0.95]) # Adjust rect to make space for suptitle and cbar
+
+            
+            #plt.tight_layout()
             if path is not None:
                 plt.savefig(f"{path}/{name}.png")
             if show:
@@ -519,33 +553,31 @@ class ModelTransfuser():
 
         # Labels
         if labels is None:
-            labels = list(np.arange(0, data.shape[0]+1).astype(str))
+            labels = np.arange(0, data.shape[0]).astype(str).tolist()
 
-        _plot_heatmap(data, labels+"Bias KV", labels, "avg_attention_map", show)
+        _plot_heatmap(data, labels+["Bias KV"], labels, "avg_attention_map", show)
         
         ####################
         # Avg Attention between informative Tokens
 
         data = stats_dict[best_model]["attn_weights"].mean(0).numpy()
-        data = data[np.ix_(~self.condition_mask.bool(), self.condition_mask.bool())]
+        data = data[np.ix_(~self.condition_mask.bool(),torch.cat((self.condition_mask.bool(), torch.tensor([True]))))]
 
-        _plot_heatmap(data, labels[self.condition_mask.bool()]+"Bias KV", labels[(1-self.condition_mask).bool()], "selected_attention_map", show)
+        xlabels = list(compress(labels, self.condition_mask)) + ["Bias KV"]
+        ylabels = list(compress(labels, 1-self.condition_mask))
+        _plot_heatmap(data, xlabels, ylabels, "selected_attention_map", show)
 
         ####################
         # Layer by Layer Attention
 
         data = stats_dict[best_model]["attn_weights"].numpy()
 
-        # Define labels
-        xlabels = labels[self.condition_mask.bool()] + ["Bias KV"]
-        ylabels = labels[~self.condition_mask.bool()]
-
         # Create a list to hold the data for each layer
         plot_data = []
         for layer_weights in data:
-            avg_attention_map = layer_weights.squeeze(0)
+            avg_attention_map = layer_weights
             
-            param_attention_subset = avg_attention_map[np.ix_(~self.condition_mask.bool(), self.condition_mask.bool())]
+            param_attention_subset = avg_attention_map[np.ix_(~self.condition_mask.bool(),torch.cat((self.condition_mask.bool(), torch.tensor([True]))))]
             plot_data.append(param_attention_subset)
 
         # Set up Figure   
@@ -586,16 +618,17 @@ class ModelTransfuser():
                 norm=norm,
                 annot=annotations,
                 fmt="",
+                annot_kws={"size": 35 / np.sqrt(len(data_to_plot))}
             )
             
             # Set titles and labels for each subplot
             ax.set_title(f"Layer {i+1}", fontsize=25, loc='left')
-            ax.tick_params(axis='y', rotation=0, labelsize=12) # Rotate y-axis labels for better readability
+            ax.tick_params(axis='y', rotation=0, labelsize=20) # Rotate y-axis labels for better readability
 
             # Only show x-axis labels on the very last plot
             if i == len(axes) - 1:
                 #ax.set_xlabel("Information Source (Observations and Bias)", fontsize=14)
-                ax.tick_params(axis='x', rotation=0, labelsize=12)
+                ax.tick_params(axis='x', rotation=0, labelsize=20)
             else:
                 ax.set_xlabel('')
 
