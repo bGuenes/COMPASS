@@ -387,7 +387,7 @@ class ModelTransfuser():
     # ----- Plotting -----
     ##############################################
 
-    def plot_model_comp(self, stats_dict=None, n_models=10, sort="median", path=None, show=True):
+    def plot_model_comp(self, stats_dict=None, n_models=10, sort="median", model_names=None, path=None, show=True):
         """
         Plot the results from the Model Comparison.
         Saves the Violin plots for individual model probability and the cumulative model probability of all observations.
@@ -400,6 +400,7 @@ class ModelTransfuser():
                             median - (default) median model probability of all observations
                             mean   -  mean model probability of all observations
                             none   - the order the models are defined in
+            model_names: (list of strings)(optional) List with the names of the models to plot.
             path:       (string)(optional) The path the plots are saved to.
                             If not provided, the plots are not saved.
             show:       (bool) Whether to show the created plots or not.
@@ -430,42 +431,78 @@ class ModelTransfuser():
             sorted_models = list(stats_dict.keys())
         stats_dict = {model: stats_dict[model] for model in sorted_models}
 
-        model_names = list(stats_dict.keys())
-        model_probs = torch.tensor([stats_dict[model]["model_prob"] for model in model_names])
-        model_log_probs = torch.stack([stats_dict[model]["log_probs"] for model in model_names])
-        model_obs_probs = torch.stack([stats_dict[model]["obs_probs"] for model in model_names])
+        model_keys = list(stats_dict.keys())
+        model_probs = torch.tensor([stats_dict[model]["model_prob"] for model in model_keys])
+        model_log_probs = torch.stack([stats_dict[model]["log_probs"] for model in model_keys])
+        model_obs_probs = torch.stack([stats_dict[model]["obs_probs"] for model in model_keys])
+        if model_names is None:
+            model_names = model_keys
 
-        sns.set_context("paper")
+        if len(model_names) < n_models:
+            n_models = len(model_names)
 
+        legend_cols = 1 if len(model_names) < 6 else 2
+
+        plt.style.use('ggplot')
+
+        ####################
         # Plot violin plot of model probabilities
         plt.figure(figsize=(10, 5))
-        sns.violinplot(data=model_obs_probs.T[:,:n_models])
-        plt.xticks(ticks=range(n_models), labels=model_names[:n_models], rotation=45, ha='right')
-        plt.title("Model Probabilities")
-        plt.xlabel("Model")
-        plt.ylabel("Probability of Observations")
+        model_names_violin = [name.replace(", ", "\n") for name in model_names[:n_models]]
+        sns.violinplot(data=model_obs_probs.T[:,:n_models],label=model_names_violin, inner_kws=dict(box_width=5, whis_width=2, color="k"))
+
+        if model_names != "":
+            plt.xticks(ticks=range(n_models), labels=model_names_violin)
+            plt.tick_params(axis='x', which='major', labelsize=16)
+
+        plt.tick_params(axis='y', which='major', labelsize=16)
+        plt.ylabel(r"$P(\mathcal{M} | x_i)$", fontsize=20)
+        plt.tight_layout()
+
         if path is not None:
             plt.savefig(f"{path}/model_probs_violin.png")
         if show:
             plt.show()
         plt.close()
 
+        ####################
         # Plot cumulative model probabilities
-        plt.figure(figsize=(10, 5))
-        plt.plot(torch.arange(1, model_log_probs.shape[1]+1).repeat(n_models,1).T,
-                    torch.nn.functional.softmax(model_log_probs.cumsum(1),0).T[:,:n_models],
-                    label=model_names[:n_models], marker='o', markersize=3, linewidth=1)
-        plt.legend()
-        #plt.xscale("log")
-        plt.title("Cumulative Model Probabilities")
-        plt.xlabel("Number of observations")
-        plt.ylabel("Model Probability")
+
+        # Calculate mean model probabilities for N observations
+        avg_model_probs = []
+        for n in range(50):
+            all_N_log_probs = []
+            for i in range(model_log_probs.shape[1]):
+                idx = torch.randperm(model_log_probs.shape[1])[:i]
+                N_log_probs = model_log_probs[:,idx].T
+                all_N_log_probs.append(torch.nn.functional.softmax(N_log_probs.sum(0),0).T)
+            all_N_log_probs = torch.stack(all_N_log_probs)
+            avg_model_probs.append(all_N_log_probs)
+        avg_model_probs = torch.stack(avg_model_probs)
+        avg_mean = avg_model_probs.mean(0)
+        avg_std = avg_model_probs.std(0)/torch.sqrt(torch.tensor(avg_model_probs.shape[0]))
+
+        plt.figure(figsize=(12, 6))
+        for n in range(n_models):
+            plt.errorbar(torch.arange(1, model_log_probs.shape[1]+1).T,
+                avg_mean[:,n], yerr=avg_std[:,n], 
+                label=model_names[n], marker='o', markersize=6, linewidth=3, elinewidth=1, capsize=2)
+        if model_names != "":
+            plt.legend(title="Models", loc='right', fontsize=12, title_fontsize=13, frameon=True, ncol=legend_cols)
+    
+        plt.tick_params(axis='both', which='major', labelsize=16)
+        plt.xlabel("# Observations", fontsize=20)
+        plt.ylabel(r"$P(\mathcal{M} | x_0,..., x_i)$", fontsize=20)
         plt.grid(True)
+        plt.tight_layout()
         if path is not None:
             plt.savefig(f"{path}/model_probs_cumulative.png")
         if show:
             plt.show()
         plt.close()
+
+    ##############################################
+    # Attention Heatmap plotting
 
     def plot_interpretation(self, stats_dict=None, labels=None, path=None, show=True):
         """
