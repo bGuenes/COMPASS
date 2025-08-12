@@ -43,6 +43,7 @@ class ModelTransfuser():
     # ----- Model Management -----
     #############################################
 
+    #---------------------------
     # Add a trained model to the transfuser
     def add_model(self, model_name, model):
         """
@@ -56,6 +57,7 @@ class ModelTransfuser():
         self.trained_models = True
         print(f"Model {model_name} added to transfuser.")
 
+    #---------------------------
     # Add multiple trained models to the transfuser
     def add_models(self, models_dict):
         """
@@ -70,6 +72,7 @@ class ModelTransfuser():
         self.trained_models = True
         print("All models added to transfuser.")
 
+    #---------------------------
     # Add data to a model
     def add_data(self, model_name, theta, x, val_theta=None, val_x=None):
         """
@@ -95,6 +98,7 @@ class ModelTransfuser():
         self.trained_models = False
         print(f"Data added to model {model_name}")
 
+    #---------------------------
     # Remove a model from the transfuser
     def remove_model(self, model_name):
         """
@@ -315,7 +319,7 @@ class ModelTransfuser():
 
         # Null Hypothesis test
         best_bayes_factor = self.stats[best_model]["Bayes_Factor_Null_Hyp"]
-        hypothesis_test = "could" if best_bayes_factor > 0 else "could not"
+        hypothesis_test = "and could" if best_bayes_factor > 0 else ", but could not"
         hypothesis_test_strength = self._bayes_factor_strength(best_bayes_factor)
 
         model_print_length = len(max(model_names, key=len))
@@ -325,7 +329,7 @@ class ModelTransfuser():
         print()
         print(f"Model {best_model} fits the data best " + 
                 f"with a relative support of {best_model_prob:.1f}% among the considered models "+
-                f"and {hypothesis_test} reject the null hypothesis{hypothesis_test_strength}.")
+                f"{hypothesis_test} reject the null hypothesis{hypothesis_test_strength}.")
         
         if self.path is not None:
             with open(f"{self.path}/model_comp.pkl", "wb") as f:
@@ -335,12 +339,16 @@ class ModelTransfuser():
     # ----- Kernel Density Estimation -----
     #############################################
 
+    #---------------------------
+    # Estimate the log probability
     def _log_prob(self, samples, observation):
         """Compute the log probability of the samples"""
         kde = gaussian_kde(samples.T)
         log_prob = kde.logpdf(observation).item()
         return log_prob
 
+    #---------------------------
+    # Estimate the Maximum A Posteriori (MAP)
     def _map_kde(self, samples):
         """Find the joint mode of the multivariate distribution"""
         kde = gaussian_kde(samples.T)  # KDE expects (n_dims, n_samples)
@@ -386,8 +394,10 @@ class ModelTransfuser():
     ##############################################
     # ----- Plotting -----
     ##############################################
-
-    def plot_model_comp(self, stats_dict=None, n_models=10, sort="median", model_names=None, path=None, show=True):
+    
+    #---------------------------
+    # Model Comparison plotting
+    def plot_comparison(self, stats_dict=None, n_models=10, sort="median", model_names=None, path=None, show=True):
         """
         Plot the results from the Model Comparison.
         Saves the Violin plots for individual model probability and the cumulative model probability of all observations.
@@ -445,9 +455,9 @@ class ModelTransfuser():
 
         plt.style.use('ggplot')
 
-        ####################
+        #---------------------------
         # Plot violin plot of model probabilities
-        plt.figure(figsize=(10, 5))
+        plt.figure(figsize=(12, 6))
         model_names_violin = [name.replace(", ", "\n") for name in model_names[:n_models]]
         sns.violinplot(data=model_obs_probs.T[:,:n_models],label=model_names_violin, inner_kws=dict(box_width=5, whis_width=2, color="k"))
 
@@ -465,26 +475,31 @@ class ModelTransfuser():
             plt.show()
         plt.close()
 
-        ####################
+        #---------------------------
         # Plot cumulative model probabilities
 
         # Calculate mean model probabilities for N observations
         avg_model_probs = []
         for n in range(50):
             all_N_log_probs = []
-            for i in range(model_log_probs.shape[1]):
-                idx = torch.randperm(model_log_probs.shape[1])[:i]
-                N_log_probs = model_log_probs[:,idx].T
+            for i in range(0,model_log_probs.shape[1]+1):
+                if i != 0:
+                    idx = torch.randperm(model_log_probs.shape[1])[:i]
+                    N_log_probs = model_log_probs[:,idx].T
+                elif i == 0:
+                    N_log_probs = torch.zeros_like(model_log_probs[:,0]).unsqueeze(0)
+
                 all_N_log_probs.append(torch.nn.functional.softmax(N_log_probs.sum(0),0).T)
             all_N_log_probs = torch.stack(all_N_log_probs)
             avg_model_probs.append(all_N_log_probs)
+
         avg_model_probs = torch.stack(avg_model_probs)
         avg_mean = avg_model_probs.mean(0)
         avg_std = avg_model_probs.std(0)/torch.sqrt(torch.tensor(avg_model_probs.shape[0]))
 
         plt.figure(figsize=(12, 6))
         for n in range(n_models):
-            plt.errorbar(torch.arange(1, model_log_probs.shape[1]+1).T,
+            plt.errorbar(torch.arange(0, model_log_probs.shape[1]+1).T,
                 avg_mean[:,n], yerr=avg_std[:,n], 
                 label=model_names[n], marker='o', markersize=6, linewidth=3, elinewidth=1, capsize=2)
         if model_names != "":
@@ -501,10 +516,9 @@ class ModelTransfuser():
             plt.show()
         plt.close()
 
-    ##############################################
+    #---------------------------
     # Attention Heatmap plotting
-
-    def plot_interpretation(self, stats_dict=None, labels=None, path=None, show=True):
+    def plot_attention(self, stats_dict=None, labels=None, path=None, show=True):
         """
         Plot the attention weights for the best performing model for interpretability.
 
@@ -550,7 +564,7 @@ class ModelTransfuser():
                 cmap='magma',
                 cbar=False,
                 linewidths=.5,
-                square=True,
+                square=False,
                 vmin=vmin,
                 vmax=vmax,
                 annot=annotations,
@@ -685,4 +699,3 @@ class ModelTransfuser():
         if show:
             plt.show()
         plt.close()
-        
