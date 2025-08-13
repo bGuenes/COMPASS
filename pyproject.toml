@@ -36,7 +36,6 @@ Issues = "https://github.com/bGuenes/COMPASS/issues"
 packages = ["src/compass"]
 
 [tool.semantic_release]
-version_source = "toml"
 version_toml = "pyproject.toml:project.version"
 branch = "main"
 changelog_file = "CHANGELOG.md"
