@@ -34,3 +34,13 @@ Issues = "https://github.com/bGuenes/COMPASS/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/compass"]
+
+[tool.semantic_release]
+version_source = "toml"
+version_toml = "pyproject.toml:project.version"
+branch = "main"
+changelog_file = "CHANGELOG.md"
+build_command = "pip install build && python -m build"
+dist_path = "dist/"
+upload_to_pypi = true
+upload_to_release = true
