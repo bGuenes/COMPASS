@@ -3,7 +3,7 @@
 </p>
 
 [![PyPi version](https://img.shields.io/pypi/v/bayes-compass.svg)](https://pypi.org/project/bayes-compass/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15183599.svg)](https://doi.org/10.5281/zenodo.15183599)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.16872060.svg)](https://doi.org/10.5281/zenodo.16872060)
 ![Static Badge](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 ![Static Badge](https://img.shields.io/badge/License-GPLv3-yellow.svg)
 ![Static Badge](https://img.shields.io/badge/Status-Active-green.svg)
