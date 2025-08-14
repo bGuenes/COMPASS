@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.2 (2025-08-14)
+
+### Bug Fixes
+
+- Update DOI badge link in README
+  ([`9ab65c6`](https://github.com/bGuenes/COMPASS/commit/9ab65c6099d22f6378730bdfff20c811aa1637d2))
+
+
 ## v1.0.1 (2025-08-14)
 
 ### Bug Fixes
