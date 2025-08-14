@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bayes-compass"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
   { name="Berkay Günes", email="b.guenes@stud.uni-heidelberg.de" },
 ]

@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.1 (2025-08-14)
+
+### Bug Fixes
+
+- Trigger pypi upload
+  ([`c6ee792`](https://github.com/bGuenes/COMPASS/commit/c6ee792e9e3b9599cfdd0f1473a561aa62894b13))
+
+
 ## v1.0.0 (2025-08-14)
 
 ### Bug Fixes
