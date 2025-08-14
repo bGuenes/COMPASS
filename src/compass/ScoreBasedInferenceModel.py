@@ -34,7 +34,7 @@ class ScoreBasedInferenceModel(nn.Module):
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
 
-        # initialize SDE
+        # Init SDE
         self.sigma = sigma
         if sde_type == "vesde":
             self.sde = VESDE(sigma=self.sigma)
@@ -43,15 +43,15 @@ class ScoreBasedInferenceModel(nn.Module):
         else:
             raise ValueError("Invalid SDE type")
         
-        # Define Model
+        # Init Model
         self.model = ConditionTransformer(nodes_size=self.nodes_size, hidden_size=hidden_size, 
                                        depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
         self.model.to(device)
         
-        # Define Trainer
+        # Init Trainer
         self.trainer = Trainer(self)
 
-        # Define Sampler
+        # Init Sampler
         self.sampler = Sampler(self)
         self.multi_obs_sampler = MultiObsSampler(self)
         

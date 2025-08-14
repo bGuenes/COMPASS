@@ -53,7 +53,8 @@ mtf.compare(x=observations, err=observations_err)
 stats = mtf.stats
 
 # Plot results
-mtf.plots()
+mtf.plot_comparison()
+mtf.plot_attention()
 ```
 
 `mtf.stats` is a dictionary containing all inferred parameters and their uncertainties, the posterior model probabilities, and the log-likelihood values for each model. <br>
