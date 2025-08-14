@@ -1,0 +1,21 @@
+{
+    "title": "COMPASS: Comparison Of Models using Probabilistic Assessment in Simulation-based Settings",
+    "description": "COMPASS is a Python package for Bayesian model comparison in a simulation-based setting. It provides tools for assessing and comparing computational models using probabilistic methods.",
+    "creators": [
+        {
+            "name": "Günes, Berkay",
+            "affiliation": "Heidelberg University",
+            "orcid": "0009-0000-8522-5070",
+            "type": "Researcher"
+        }
+    ],
+    "keywords": [
+        "bayesian-inference",
+        "model-comparison",
+        "simulation-based-inference",
+        "computational-modeling",
+        "python"
+    ],
+    "license": "GPL-3.0-or-later",
+    "upload_type": "software"
+}
