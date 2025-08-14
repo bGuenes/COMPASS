@@ -10,30 +10,48 @@ jobs:
     name: Create Release and Publish to PyPI
     runs-on: ubuntu-latest
     permissions:
-      # Needed for python-semantic-release to create a release
       contents: write
-      # Needed for trusted publishing to PyPI
       id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # This is required for python-semantic-release to be able to analyze commits
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.x"
+      
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install python-semantic-release
+          pip install build twine
           pip install .
 
-      - name: Create Release and Publish
+      - name: Create Version, Release, and Changelog
         env:
-          # This token is required to create a GitHub release.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: semantic-release publish
+        run: |
+          # This command does it all: calculates version, creates tag, creates GitHub Release
+          semantic-release version
+          # This command updates the changelog file based on the new version
+          semantic-release changelog
+
+      - name: Build and Publish to PyPI
+        env:
+          # This uses the trusted publisher configuration on PyPI
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          # Build the package from the updated source
+          python -m build
+          # Upload to PyPI
+          twine upload dist/*
