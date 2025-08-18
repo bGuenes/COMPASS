@@ -47,7 +47,8 @@ def objective(trial):
         sbim = SBIm(nodes_size=nodes_size, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
 
         # Train model
-        sbim.train(train_theta, train_x, val_theta, val_x, batch_size=batch_size, max_epochs=5, device="cuda", verbose=True, path="data/tutorial_Gaussians", early_stopping_patience=20)
+        sbim.train(train_theta, train_x, val_theta, val_x, batch_size=batch_size, max_epochs=500, device="cuda", verbose=True, path="data/tutorial_Gaussians", early_stopping_patience=20)
+        sbim.load("data/tutorial_Gaussians/Model_checkpoint.pt", device="cuda")
 
         # Evaluate model
         test_theta, test_x = gen_data(100)
