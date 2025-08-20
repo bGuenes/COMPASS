@@ -319,7 +319,7 @@ class ModelTransfuser():
 
         # Null Hypothesis test
         best_bayes_factor = self.stats[best_model]["Bayes_Factor_Null_Hyp"]
-        hypothesis_test = "and could" if best_bayes_factor > 0 else ", but could not"
+        hypothesis_test = " and could" if best_bayes_factor > 0 else ", but could not"
         hypothesis_test_strength = self._bayes_factor_strength(best_bayes_factor)
 
         model_print_length = len(max(model_names, key=len))
@@ -328,7 +328,7 @@ class ModelTransfuser():
             print(f"{model.ljust(model_print_length)}: {100*self.stats[model]['model_prob']:6.2f} %")
         print()
         print(f"Model {best_model} fits the data best " + 
-                f"with a relative support of {best_model_prob:.1f}% among the considered models "+
+                f"with a relative support of {best_model_prob:.1f}% among the considered models"+
                 f"{hypothesis_test} reject the null hypothesis{hypothesis_test_strength}.")
         
         if self.path is not None:
