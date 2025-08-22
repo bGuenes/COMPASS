@@ -546,17 +546,6 @@ class ModelTransfuser():
             if show:
                 plt.show()
             plt.close()
-
-        ####################
-        # Avg Attention between all Tokens
-
-        data = stats_dict[best_model]["attn_weights"].mean(0).numpy()
-
-        # Labels
-        if labels is None:
-            labels = np.arange(0, data.shape[0]).astype(str).tolist()
-
-        _plot_heatmap(data, labels+["Bias KV"], labels, "avg_attention_map", show)
         
         ####################
         # Avg Attention between informative Tokens
