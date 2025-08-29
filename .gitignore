@@ -1,2 +1,5 @@
 dist/
 tutorials/data/tutorial_Gaussians/*
+tutorials/data/predator_prey/*
+.DS_Store
+src/.DS_Store
