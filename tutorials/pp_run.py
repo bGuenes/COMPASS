@@ -1,5 +1,5 @@
 from autocvd import autocvd
-autocvd(num_gpus=6, interval=1)
+autocvd(num_gpus=9, interval=1)
 
 from src.compass import ModelTransfuser as MTf
 import torch
@@ -128,16 +128,16 @@ if __name__ == "__main__":
 
     for model_name, model_func in models.items():
         # Sample initial conditions and parameters
-        init_state = torch.tensor([[20.0, 30.0]])
+        init_state = torch.tensor([[30.0, 1.0]])
         log_init_state = torch.log(init_state)
 
-        log_params = prior.sample(1_000_000)
+        log_params = prior.sample(500_000)
         log_val_params = prior.sample(50_000)
 
         params = torch.exp(log_params)
         val_params = torch.exp(log_val_params)
 
-        t_max = 30
+        t_max = 20
         dt = 0.01
 
         # -----------------
@@ -205,7 +205,7 @@ if __name__ == "__main__":
         
         mtf.add_data(model_name, theta, x, val_theta, val_x)
 
-    mtf.init_models(sde_type='vesde', sigma=2, hidden_size=50, depth=8, num_heads=5, mlp_ratio=5)
+    mtf.init_models(sde_type='vesde', sigma=2, hidden_size=50, depth=8, num_heads=5, mlp_ratio=4)
     mtf.train_models(batch_size=1000, verbose=False)
 
     print("Finished!")
