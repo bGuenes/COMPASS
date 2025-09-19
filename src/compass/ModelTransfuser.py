@@ -403,13 +403,13 @@ class ModelTransfuser():
 
         legend_cols = 1 if len(model_names) < 6 else 2
 
-        plt.style.use('ggplot')
+        # plt.style.use('ggplot')
 
         #---------------------------
         # Plot violin plot of model probabilities
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(12, 6), dpi=500)
         model_names_violin = [name.replace(", ", "\n") for name in model_names[:n_models]]
-        sns.violinplot(data=model_obs_probs.T[:,:n_models],label=model_names_violin, inner_kws=dict(box_width=5, whis_width=2, color="k"))
+        sns.violinplot(data=model_obs_probs.T[:,:n_models],label=model_names_violin, palette=sns.color_palette("dark"), inner_kws=dict(box_width=5, whis_width=2, color="k"))
 
         if model_names != "":
             plt.xticks(ticks=range(n_models), labels=model_names_violin)
@@ -417,6 +417,7 @@ class ModelTransfuser():
 
         plt.tick_params(axis='y', which='major', labelsize=16)
         plt.ylabel(r"$P(\mathcal{M} | x_i)$", fontsize=20)
+        sns.despine()
         plt.tight_layout()
 
         if path is not None:
@@ -447,18 +448,23 @@ class ModelTransfuser():
         avg_mean = avg_model_probs.mean(0)
         avg_std = avg_model_probs.std(0)/torch.sqrt(torch.tensor(avg_model_probs.shape[0]))
 
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(12, 6), dpi=500)
+        palette = sns.color_palette("dark", n_colors=n_models)
         for n in range(n_models):
-            plt.errorbar(torch.arange(0, model_log_probs.shape[1]+1).T,
-                avg_mean[:,n], yerr=avg_std[:,n], 
-                label=model_names[n], marker='o', markersize=6, linewidth=3, elinewidth=1, capsize=2)
+            plt.errorbar(
+            torch.arange(0, model_log_probs.shape[1]+1).T,
+            avg_mean[:, n], yerr=avg_std[:, n],
+            label=model_names[n], marker='o', markersize=6, linewidth=3, elinewidth=1, capsize=2,
+            color=palette[n]
+            )
         if model_names != "":
-            plt.legend(title="Models", loc='right', fontsize=12, title_fontsize=13, frameon=True, ncol=legend_cols)
+            plt.legend(title="Models", loc='right', fontsize=15, title_fontsize=16, frameon=True, ncol=legend_cols)
     
         plt.tick_params(axis='both', which='major', labelsize=16)
         plt.xlabel("# Observations", fontsize=20)
         plt.ylabel(r"$P(\mathcal{M} | x_0,..., x_i)$", fontsize=20)
-        plt.grid(True)
+        # plt.grid(True)
+        sns.despine()
         plt.tight_layout()
         if path is not None:
             plt.savefig(f"{path}/model_probs_cumulative.png")
@@ -496,7 +502,7 @@ class ModelTransfuser():
 
         def _plot_heatmap(data, xlabels, ylabels, name, show):
             # Set annotations in the attention blocks
-            annotation_mask = data > 0.1
+            annotation_mask = data > 0.0
             annot = np.where(annotation_mask, data.round(2), np.nan)  # Use NaN to hide annotations below threshold
             annotations = annot.astype(str)
             annotations[np.isnan(annot)] = ""
@@ -506,7 +512,7 @@ class ModelTransfuser():
             norm = PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax) 
 
             # Create figure
-            fig = plt.figure(figsize=(12,6))
+            fig = plt.figure(figsize=(12,6), dpi=500)
             ax = sns.heatmap(
                 data,
                 xticklabels=xlabels,
@@ -571,12 +577,13 @@ class ModelTransfuser():
             plot_data.append(param_attention_subset)
 
         # Set up Figure   
-        nrows = self.models_dict[best_model].depth
+        nrows = stats_dict[best_model]["attn_weights"].shape[2]
         fig, axes = plt.subplots(
             nrows=nrows, 
             ncols=1, 
             figsize=(12, 3*nrows),
-            sharex=True
+            sharex=True,
+            dpi=500
         )
 
         # Set up colours
@@ -606,9 +613,9 @@ class ModelTransfuser():
                 vmin=vmin,
                 vmax=vmax,
                 norm=norm,
-                annot=annotations,
+                # annot=annotations,
                 fmt="",
-                annot_kws={"size": 35 / np.sqrt(len(data_to_plot))}
+                # annot_kws={"size": 35 / np.sqrt(len(data_to_plot))}
             )
             
             # Set titles and labels for each subplot
