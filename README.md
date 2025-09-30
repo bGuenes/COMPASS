@@ -26,6 +26,9 @@ pip install bayes-compass
 
 
 # Usage
+There are two examples provided in the [tutorials](tutorials) folder, demonstrating the model comparison workflow and the parameter inference with `compass`.
+
+
 ## Model Comparison Example
 The `ModelTransfuser` class provides a framework for the model comparison workflow. <br>
 It uses the `ScoreBasedInferenceModel` class to perform the simulation-based inference, predicts the posterior distribution and samples from the Likelihood function with the inferred parameters. <br>
@@ -66,7 +69,7 @@ The model is also able to handle observational uncertainties and is designed to 
 ```python
 from compass import ScoreBasedInferenceModel as SBIm
 
-sbimodel = SBIm(nodes_size=nodes_size, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
+sbimodel = SBIm(nodes_size, sigma, depth, hidden_size, num_heads, mlp_ratio)
 
 sbimodel.train(train_data, val_data=val_data, path=path, device="cuda")
 ```
@@ -86,9 +89,8 @@ posterior_samples = sbimodel.sample(x=observations, err=observations_err, timest
 To sample from the Likelihood function, you can again use the `sample()` function and provide the Maximum-A-Posteriori $\hat\theta$ values in `theta` and the standard deviation `err` (optional):
 ```python
 # Samlpe from the likelihood function
-likelihood_samples = sbimodel.sample_likelihood(theta=theta_hat, err=std_theta_hat, timesteps=100)
+likelihood_samples = sbimodel.sample(theta=theta_hat, err=std_theta_hat, timesteps=100)
 ```
-
 
 # Contributing
 Contributions are welcome! Feel free to open issues or submit pull requests to improve this package.
