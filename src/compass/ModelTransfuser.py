@@ -271,18 +271,6 @@ class ModelTransfuser():
             self.stats[model_name]["MAP"] = theta_hat
 
             ####################
-            # Null Hypothesis
-            null_samples = model.sample(timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
-                                            multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
-                                            order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
-                                            device=device, verbose=verbose, method=method)
-            null_samples = null_samples[0,:,condition_mask.bool()].cpu().numpy()
-
-            # Log probability of null hypothesis
-            null_log_probs = torch.tensor([self._log_prob(null_samples, obs) for obs in x])
-            self.stats[model_name]["log_probs_nullHyp"] = null_log_probs
-
-            ####################
             # Likelihood sampling
             likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=(1-condition_mask),
                                             timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
@@ -294,10 +282,7 @@ class ModelTransfuser():
             # Log probability of likelihood
             log_probs = torch.tensor([self._log_prob(likelihood_samples[i], x[i]) for i in range(len(x))])
             self.stats[model_name]["log_probs"] = log_probs
-            self.stats[model_name]["AIC"] = log_probs.sum() 
-
-            # Null Hypothesis test
-            self.stats[model_name]["Bayes_Factor_Null_Hyp"] = log_probs.sum() - null_log_probs.sum()
+            self.stats[model_name]["AIC"] = log_probs.sum()
 
 
         # Calculate Model Probabilitys from AICs
@@ -317,19 +302,13 @@ class ModelTransfuser():
         best_model = model_names[model_probs.argmax()]
         best_model_prob = 100*model_probs.max()
 
-        # Null Hypothesis test
-        best_bayes_factor = self.stats[best_model]["Bayes_Factor_Null_Hyp"]
-        hypothesis_test = "and could" if best_bayes_factor > 0 else ", but could not"
-        hypothesis_test_strength = self._bayes_factor_strength(best_bayes_factor)
-
         model_print_length = len(max(model_names, key=len))
         print(f"Probabilities of the models after {len(x)} observations:")
         for model in model_names:
             print(f"{model.ljust(model_print_length)}: {100*self.stats[model]['model_prob']:6.2f} %")
         print()
         print(f"Model {best_model} fits the data best " + 
-                f"with a relative support of {best_model_prob:.1f}% among the considered models "+
-                f"{hypothesis_test} reject the null hypothesis{hypothesis_test_strength}.")
+                f"with a relative support of {best_model_prob:.1f}% among the considered models.")
         
         if self.path is not None:
             with open(f"{self.path}/model_comp.pkl", "wb") as f:
@@ -361,35 +340,6 @@ class ModelTransfuser():
         std_devs = np.sqrt(np.diag(kde.covariance))
 
         return result.x, std_devs
-    
-    ##############################################
-    # ----- Bayes Factor Strenght -----
-    ##############################################
-
-    def _bayes_factor_strength(self, BF):
-        """
-        Calculate the strength of the Bayes factor.
-
-        Args:
-            BF: The Log Bayes factor.
-
-        Returns:
-            The strength of the Bayes factor as a string.
-        """
-        hypothesis_test_strength = torch.exp(BF)
-
-        if 1 < hypothesis_test_strength <= 3.2:
-            hypothesis_test_strength = " barley"
-        elif 3.2 < hypothesis_test_strength <= 10:
-            hypothesis_test_strength = " substantially"
-        elif 10 < hypothesis_test_strength <= 100:
-            hypothesis_test_strength = " strongly"
-        elif 100 < hypothesis_test_strength:
-            hypothesis_test_strength = " decisively"
-        else:
-            hypothesis_test_strength = ""
-
-        return hypothesis_test_strength
     
     ##############################################
     # ----- Plotting -----
@@ -453,13 +403,13 @@ class ModelTransfuser():
 
         legend_cols = 1 if len(model_names) < 6 else 2
 
-        plt.style.use('ggplot')
+        # plt.style.use('ggplot')
 
         #---------------------------
         # Plot violin plot of model probabilities
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(12, 6), dpi=500)
         model_names_violin = [name.replace(", ", "\n") for name in model_names[:n_models]]
-        sns.violinplot(data=model_obs_probs.T[:,:n_models],label=model_names_violin, inner_kws=dict(box_width=5, whis_width=2, color="k"))
+        sns.violinplot(data=model_obs_probs.T[:,:n_models],label=model_names_violin, palette=sns.color_palette("dark"), inner_kws=dict(box_width=5, whis_width=2, color="k"))
 
         if model_names != "":
             plt.xticks(ticks=range(n_models), labels=model_names_violin)
@@ -467,6 +417,7 @@ class ModelTransfuser():
 
         plt.tick_params(axis='y', which='major', labelsize=16)
         plt.ylabel(r"$P(\mathcal{M} | x_i)$", fontsize=20)
+        sns.despine()
         plt.tight_layout()
 
         if path is not None:
@@ -497,18 +448,23 @@ class ModelTransfuser():
         avg_mean = avg_model_probs.mean(0)
         avg_std = avg_model_probs.std(0)/torch.sqrt(torch.tensor(avg_model_probs.shape[0]))
 
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(12, 6), dpi=500)
+        palette = sns.color_palette("dark", n_colors=n_models)
         for n in range(n_models):
-            plt.errorbar(torch.arange(0, model_log_probs.shape[1]+1).T,
-                avg_mean[:,n], yerr=avg_std[:,n], 
-                label=model_names[n], marker='o', markersize=6, linewidth=3, elinewidth=1, capsize=2)
+            plt.errorbar(
+            torch.arange(0, model_log_probs.shape[1]+1).T,
+            avg_mean[:, n], yerr=avg_std[:, n],
+            label=model_names[n], marker='o', markersize=6, linewidth=3, elinewidth=1, capsize=2,
+            color=palette[n]
+            )
         if model_names != "":
-            plt.legend(title="Models", loc='right', fontsize=12, title_fontsize=13, frameon=True, ncol=legend_cols)
+            plt.legend(title="Models", loc='right', fontsize=15, title_fontsize=16, frameon=True, ncol=legend_cols)
     
         plt.tick_params(axis='both', which='major', labelsize=16)
         plt.xlabel("# Observations", fontsize=20)
         plt.ylabel(r"$P(\mathcal{M} | x_0,..., x_i)$", fontsize=20)
-        plt.grid(True)
+        # plt.grid(True)
+        sns.despine()
         plt.tight_layout()
         if path is not None:
             plt.savefig(f"{path}/model_probs_cumulative.png")
@@ -546,7 +502,7 @@ class ModelTransfuser():
 
         def _plot_heatmap(data, xlabels, ylabels, name, show):
             # Set annotations in the attention blocks
-            annotation_mask = data > 0.1
+            annotation_mask = data > 0.0
             annot = np.where(annotation_mask, data.round(2), np.nan)  # Use NaN to hide annotations below threshold
             annotations = annot.astype(str)
             annotations[np.isnan(annot)] = ""
@@ -556,7 +512,7 @@ class ModelTransfuser():
             norm = PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax) 
 
             # Create figure
-            fig = plt.figure(figsize=(12,6))
+            fig = plt.figure(figsize=(12,6), dpi=500)
             ax = sns.heatmap(
                 data,
                 xticklabels=xlabels,
@@ -596,17 +552,6 @@ class ModelTransfuser():
             if show:
                 plt.show()
             plt.close()
-
-        ####################
-        # Avg Attention between all Tokens
-
-        data = stats_dict[best_model]["attn_weights"].mean(0).numpy()
-
-        # Labels
-        if labels is None:
-            labels = np.arange(0, data.shape[0]).astype(str).tolist()
-
-        _plot_heatmap(data, labels+["Bias KV"], labels, "avg_attention_map", show)
         
         ####################
         # Avg Attention between informative Tokens
@@ -632,12 +577,13 @@ class ModelTransfuser():
             plot_data.append(param_attention_subset)
 
         # Set up Figure   
-        nrows = self.models_dict[best_model].depth
+        nrows = stats_dict[best_model]["attn_weights"].shape[2]
         fig, axes = plt.subplots(
             nrows=nrows, 
             ncols=1, 
             figsize=(12, 3*nrows),
-            sharex=True
+            sharex=True,
+            dpi=500
         )
 
         # Set up colours
@@ -667,9 +613,9 @@ class ModelTransfuser():
                 vmin=vmin,
                 vmax=vmax,
                 norm=norm,
-                annot=annotations,
+                # annot=annotations,
                 fmt="",
-                annot_kws={"size": 35 / np.sqrt(len(data_to_plot))}
+                # annot_kws={"size": 35 / np.sqrt(len(data_to_plot))}
             )
             
             # Set titles and labels for each subplot
