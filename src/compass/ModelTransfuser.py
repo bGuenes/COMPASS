@@ -282,7 +282,14 @@ class ModelTransfuser():
             # Log probability of likelihood
             log_probs = torch.tensor([self._log_prob(likelihood_samples[i], x[i]) for i in range(len(x))])
             self.stats[model_name]["log_probs"] = log_probs
-            self.stats[model_name]["AIC"] = log_probs.sum()
+
+            # AICc calculation
+            param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            self.stats[model_name]["param_count"] = param_count
+            sample_size = x.shape[0]
+            # calculate the correction term for AICc
+            aic_corrector = 2 * param_count + (2*param_count**2 + 2*param_count) / (sample_size - param_count - 1)
+            self.stats[model_name]["AIC"] = aic_corrector - 2 * log_probs.sum()
 
 
         # Calculate Model Probabilitys from AICs
@@ -291,8 +298,11 @@ class ModelTransfuser():
         model_probs = self.softmax(aics)
 
         # Calculate Probability of each observation
+        param_counts = torch.tensor([self.stats[model_name]["param_count"] for model_name in self.stats.keys()])
         log_probs = torch.stack([self.stats[model_name]["log_probs"] for model_name in self.stats.keys()])
-        probs = self.softmax(log_probs)
+        aic_corrector = 2 * param_counts.unsqueeze(1) + (2*param_counts.unsqueeze(1)**2 + 2*param_counts.unsqueeze(1)) / (x.shape[0] - param_counts.unsqueeze(1) - 1)
+        individual_aicc = aic_corrector - 2 * log_probs
+        probs = self.softmax(individual_aicc)
 
         for i, model_name in enumerate(self.stats.keys()):
             self.stats[model_name]["model_prob"] = model_probs[i].item()
@@ -376,11 +386,11 @@ class ModelTransfuser():
         if stats_dict is None:
             stats_dict = self.stats
 
-        # Sort models by log_probs
+        # Sort models by observation probabilities
         if sort == "median":
-            sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["log_probs"].median(),reverse=True)
+            sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["obs_probs"].median(),reverse=True)
         elif sort == "mean":
-            sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["log_probs"].mean(),reverse=True)
+            sorted_models = sorted(stats_dict, key=lambda x: stats_dict[x]["obs_probs"].mean(),reverse=True)
         elif type(sort) == list:
             sorted_models = sort
             # add the remaining models to the end of the list for correct probability calculation
@@ -392,9 +402,11 @@ class ModelTransfuser():
         stats_dict = {model: stats_dict[model] for model in sorted_models}
 
         model_keys = list(stats_dict.keys())
-        model_probs = torch.tensor([stats_dict[model]["model_prob"] for model in model_keys])
+
         model_log_probs = torch.stack([stats_dict[model]["log_probs"] for model in model_keys])
         model_obs_probs = torch.stack([stats_dict[model]["obs_probs"] for model in model_keys])
+        param_counts = torch.tensor([stats_dict[model]["param_count"] for model in model_keys])
+
         if model_names is None:
             model_names = model_keys
 
@@ -432,17 +444,19 @@ class ModelTransfuser():
         # Calculate mean model probabilities for N observations
         avg_model_probs = []
         for n in range(50):
-            all_N_log_probs = []
+            all_N_AICc = []
             for i in range(0,model_log_probs.shape[1]+1):
                 if i != 0:
                     idx = torch.randperm(model_log_probs.shape[1])[:i]
                     N_log_probs = model_log_probs[:,idx].T
+                    aic_corrector = 2 * param_counts + (2*param_counts**2 + 2*param_counts) / (i - param_counts - 1)
+                    N_AICc = aic_corrector - 2 * N_log_probs
                 elif i == 0:
-                    N_log_probs = torch.zeros_like(model_log_probs[:,0]).unsqueeze(0)
+                    N_AICc = torch.zeros_like(model_log_probs[:,0]).unsqueeze(0)
 
-                all_N_log_probs.append(torch.nn.functional.softmax(N_log_probs.sum(0),0).T)
-            all_N_log_probs = torch.stack(all_N_log_probs)
-            avg_model_probs.append(all_N_log_probs)
+                all_N_AICc.append(torch.nn.functional.softmax(N_AICc.sum(0),0).T)
+            all_N_AICc = torch.stack(all_N_AICc)
+            avg_model_probs.append(all_N_AICc)
 
         avg_model_probs = torch.stack(avg_model_probs)
         avg_mean = avg_model_probs.mean(0)
@@ -595,8 +609,8 @@ class ModelTransfuser():
             # Get the data for the current layer
             data_to_plot = plot_data[i]
 
-            # Create a boolean mask for annotations. Only show values > 0.1
-            annotation_mask = data_to_plot > 0.1
+            # Create a boolean mask for annotations. Only show values > 0.0
+            annotation_mask = data_to_plot > 0.0
             annot = np.where(annotation_mask, data_to_plot.round(2), np.nan)  # Use NaN to hide annotations below threshold
             annotations = annot.astype(str)
             annotations[np.isnan(annot)] = ""
@@ -613,9 +627,9 @@ class ModelTransfuser():
                 vmin=vmin,
                 vmax=vmax,
                 norm=norm,
-                # annot=annotations,
+                annot=annotations,
                 fmt="",
-                # annot_kws={"size": 35 / np.sqrt(len(data_to_plot))}
+                annot_kws={"size": 35 / np.sqrt(len(data_to_plot))}
             )
             
             # Set titles and labels for each subplot
