@@ -289,7 +289,7 @@ class ModelTransfuser():
             sample_size = x.shape[0]
             # calculate the correction term for AICc
             aic_corrector = 2 * param_count + (2*param_count**2 + 2*param_count) / (sample_size - param_count - 1)
-            self.stats[model_name]["AIC"] = aic_corrector - 2 * log_probs.sum()
+            self.stats[model_name]["AIC"] = (aic_corrector - 2 * log_probs).sum()
 
 
         # Calculate Model Probabilitys from AICs
