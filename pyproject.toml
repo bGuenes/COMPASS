@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "bayes-compass"
 version = "1.0.3"
 authors = [
-  { name="Berkay Günes", email="b.guenes@stud.uni-heidelberg.de" },
+  { name="XXXXX-XXXXX", email="XXXXX-XXXXX" },
 ]
 description = "COMPASS: A Python package for bayesian model comparison in a simulation based setting"
 readme = "README.md"
@@ -29,8 +29,8 @@ license = "GPL-3.0"
 license-files = ["COPYING"]
 
 [project.urls]
-Homepage = "https://github.com/bGuenes/COMPASS"
-Issues = "https://github.com/bGuenes/COMPASS/issues"
+Homepage = "XXXXX-XXXXX"
+Issues = "XXXXX-XXXXX"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/compass"]
