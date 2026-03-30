@@ -1,6 +1,7 @@
 import os
 import sys
 import pickle
+import tqdm
 
 import torch
 import torch.nn as nn
@@ -245,7 +246,7 @@ class ModelTransfuser():
         self.softmax = nn.Softmax(dim=0)
         
         # Loop over all models
-        for model_name, model in self.models_dict.items():
+        for model_name, model in tqdm.tqdm(self.models_dict.items(), desc="Comparing models", unit="model"):
             self.stats[model_name] = {}
             if condition_mask is None:
                 condition_mask = torch.cat([torch.zeros(model.nodes_size-x.shape[-1]),torch.ones(x.shape[-1])])
