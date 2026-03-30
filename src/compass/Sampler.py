@@ -223,27 +223,50 @@ class Sampler():
     #############################################
 
     def _get_score(self, x, t, condition_mask, cfg_alpha=None):
-        """Get score estimate with optional classifier-free guidance"""
-        # Get conditional score
+        """Get score estimate with optional classifier-free guidance.
+        
+        Handles both 2D input (num_samples, nodes_size) and 
+        3D input (num_obs, num_samples, nodes_size) by flattening.
+        """
+        input_shape = x.shape
+        
+        # Flatten if 3D: (num_obs, num_samples, N) → (num_obs * num_samples, N)
+        if x.dim() == 3:
+            num_obs, num_samples, nodes_size = x.shape
+            x_flat = x.reshape(-1, nodes_size)
+            c_flat = condition_mask.reshape(-1, nodes_size)
+        else:
+            x_flat = x
+            c_flat = condition_mask
+    
         with torch.no_grad():
-            # Check if Attention weights should be returned
-            if t.item() == self.attn_weights_time and self.return_attn_weights:
-                score_cond, attn_weights = self.model(x=x, t=t, c=condition_mask, return_attn_weights=True)
+            # Attention weight extraction (only once per sampling run)
+            if (abs(t.flatten()[0].item() - self.attn_weights_time.item()) < 1e-6 
+                    and self.return_attn_weights):
+                score_cond, attn_weights = self.model(
+                    x=x_flat, t=t, c=c_flat, return_attn_weights=True
+                )
                 self.all_attn_weights.append(attn_weights)
-                self.return_attn_weights = False  # Only return once per sample
+                self.return_attn_weights = False
             else:
-                score_cond = self.model(x=x, t=t, c=condition_mask)
-
+                score_cond = self.model(x=x_flat, t=t, c=c_flat)
+    
             score_cond = self.SBIm.output_scale_function(t, score_cond)
             
-            # Apply classifier-free guidance if requested
+            # Classifier-free guidance
             if cfg_alpha is not None:
-                score_uncond = self.model(x=x, t=t, c=torch.zeros_like(condition_mask))
+                score_uncond = self.model(
+                    x=x_flat, t=t, c=torch.zeros_like(c_flat)
+                )
                 score_uncond = self.SBIm.output_scale_function(t, score_uncond)
                 score = score_uncond + cfg_alpha * (score_cond - score_uncond)
             else:
                 score = score_cond
-                
+    
+        # Unflatten back to original shape
+        if len(input_shape) == 3:
+            score = score.reshape(input_shape)
+        
         return score
 
     def _check_data_shape(self, data, condition_mask, err):
@@ -349,25 +372,25 @@ class Sampler():
             self.data_t[:,0,:,:] = data
             
         # Main sampling loop
-        for n in tqdm.tqdm(range(len(data)), disable=not self.verbose):
-            for i, t in enumerate(self.timesteps_list):
 
-                t = t.reshape(-1, 1)
-                
-                # Get score estimate
-                score = self._get_score(data[n,:], t, condition_mask[n,:], self.cfg_alpha)
-                
-                # Update step
-                dx = self.sde.sigma**(2*t) * score * self.dt
-                
-                # Apply update respecting condition mask
-                data[n,:] = data[n,:] + dx * (1-condition_mask[n,:])
-                
-                if self.save_trajectory:
-                    # Store trajectory data
-                    self.data_t[n,i+1] = data[n,:]
-                    self.dx_t[n,i] = dx
-                    self.score_t[n,i] = score
+        for i, t in tqdm.tqdm(enumerate(self.timesteps_list), disable=not self.verbose):
+
+            t = t.reshape(-1, 1)
+            
+            # Get score estimate
+            score = self._get_score(data, t, condition_mask, self.cfg_alpha)
+            
+            # Update step
+            dx = self.sde.sigma**(2*t) * score * self.dt
+            
+            # Apply update respecting condition mask
+            data = data + dx * (1-condition_mask)
+            
+            if self.save_trajectory:
+                # Store trajectory data
+                self.data_t[:,i+1,:,:] = data
+                self.dx_t[:,i,:,:] = dx
+                self.score_t[:,i,:,:] = score
 
         return data.detach()
     
@@ -475,35 +498,35 @@ class Sampler():
             self.data_t[:,0,:,:] = data
 
         # Main sampling loop
-        for n in tqdm.tqdm(range(len(data)), disable=not self.verbose):
-            for i in range(self.timesteps-1):
-                
-                # ------- PREDICTOR: DPM-Solver -------
-                t_now = self.timesteps_list[i].reshape(-1, 1)
-                t_next = self.timesteps_list[i+1].reshape(-1, 1)
 
-                if order == 1:
-                    data[n,:] = self._dpm_solver_1_step(data[n,:], t_now, t_next, condition_mask[n,:])
-                elif order == 2:
-                    data[n,:] = self._dpm_solver_2_step(data[n,:], t_now, t_next, condition_mask[n,:])
-                elif order == 3:
-                    data[n,:] = self._dpm_solver_3_step(data[n,:], t_now, t_next, condition_mask[n,:])
-                else:
-                    raise ValueError(f"Only orders 1, 2 or 3 are supported in the DPM-Solver.")
-                
-                # ------- CORRECTOR: Langevin MCMC steps -------
-                # Only apply corrector steps occasionally to save computation
-                if corrector_steps > 0 and (i % corrector_steps_interval == 0 or i >= self.timesteps - final_corrector_steps):
-                    steps = corrector_steps
-                    if i >= self.timesteps - final_corrector_steps:
-                        steps = corrector_steps * 2  # More steps at the end
-                        
-                    data[n,:] = self._corrector_step(data[n,:], t_next, condition_mask[n,:], 
-                                               steps, snr, self.cfg_alpha)
+        for i in tqdm.tqdm(range(self.timesteps-1), disable=not self.verbose):
+            
+            # ------- PREDICTOR: DPM-Solver -------
+            t_now = self.timesteps_list[i].reshape(-1, 1)
+            t_next = self.timesteps_list[i+1].reshape(-1, 1)
 
-                if self.save_trajectory:
-                    # Store trajectory data
-                    self.data_t[n,i+1] = data[n,:]
+            if order == 1:
+                data = self._dpm_solver_1_step(data, t_now, t_next, condition_mask)
+            elif order == 2:
+                data = self._dpm_solver_2_step(data, t_now, t_next, condition_mask)
+            elif order == 3:
+                data = self._dpm_solver_3_step(data, t_now, t_next, condition_mask)
+            else:
+                raise ValueError(f"Only orders 1, 2 or 3 are supported in the DPM-Solver.")
+            
+            # ------- CORRECTOR: Langevin MCMC steps -------
+            # Only apply corrector steps occasionally to save computation
+            if corrector_steps > 0 and (i % corrector_steps_interval == 0 or i >= self.timesteps - final_corrector_steps):
+                steps = corrector_steps
+                if i >= self.timesteps - final_corrector_steps:
+                    steps = corrector_steps * 2  # More steps at the end
+                    
+                data = self._corrector_step(data, t_next, condition_mask, 
+                                            steps, snr, self.cfg_alpha)
+
+            if self.save_trajectory:
+                # Store trajectory data
+                self.data_t[:,i+1] = data
 
         return data.detach()
     
