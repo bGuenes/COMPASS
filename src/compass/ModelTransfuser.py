@@ -244,12 +244,20 @@ class ModelTransfuser():
         self.stats = {}
         self.model_null_log_probs = {}
         self.softmax = nn.Softmax(dim=0)
-        
+        self._aicc_warned_once = False
+
+        # Remember whether the user explicitly supplied a condition mask. If not,
+        # it must be rebuilt per model because different models can have a
+        # different number of (physical) parameters -> different nodes_size.
+        user_condition_mask = condition_mask
+
         # Loop over all models
         for model_name, model in tqdm.tqdm(self.models_dict.items(), desc="Comparing models", unit="model"):
             self.stats[model_name] = {}
-            if condition_mask is None:
+            if user_condition_mask is None:
                 condition_mask = torch.cat([torch.zeros(model.nodes_size-x.shape[-1]),torch.ones(x.shape[-1])])
+            else:
+                condition_mask = user_condition_mask
             self.condition_mask = condition_mask
 
             ####################
@@ -284,26 +292,34 @@ class ModelTransfuser():
             log_probs = torch.tensor([self._log_prob(likelihood_samples[i], x[i]) for i in range(len(x))])
             self.stats[model_name]["log_probs"] = log_probs
 
-            # AICc calculation
-            param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            # AICc calculation.
+            # k must be the number of PHYSICAL model parameters (the theta
+            # dimension of this model), NOT the neural-network weight count.
+            # The posterior samples are already sliced to the latent (theta)
+            # dimensions, so their last axis gives the parameter count -- this
+            # is also robust to models with different theta dimensions.
+            param_count = posterior_samples.shape[-1]
             self.stats[model_name]["param_count"] = param_count
             sample_size = x.shape[0]
-            # calculate the correction term for AICc
-            aic_corrector = 2 * param_count + (2*param_count**2 + 2*param_count) / (sample_size - param_count - 1)
-            self.stats[model_name]["AIC"] = (aic_corrector - 2 * log_probs).sum()
+            # Per-observation AICc (guards the small-sample term automatically),
+            # summed over observations to match the per-observation formulation
+            # used for obs_probs and the cumulative plot.
+            aicc_per_obs = self._aicc(log_probs, param_count, sample_size)
+            self.stats[model_name]["AIC"] = aicc_per_obs.sum()
 
 
-        # Calculate Model Probabilitys from AICs
+        # Calculate Model Probabilitys from AICs.
+        # Akaike weights: w_i = softmax(-AICc_i / 2); the model with the LOWEST
+        # AICc gets the highest probability.
         aics = [self.stats[model_name]["AIC"] for model_name in self.stats.keys()]
         aics = torch.tensor(aics)
-        model_probs = self.softmax(aics)
+        model_probs = self.softmax(-0.5 * aics)
 
         # Calculate Probability of each observation
         param_counts = torch.tensor([self.stats[model_name]["param_count"] for model_name in self.stats.keys()])
         log_probs = torch.stack([self.stats[model_name]["log_probs"] for model_name in self.stats.keys()])
-        aic_corrector = 2 * param_counts.unsqueeze(1) + (2*param_counts.unsqueeze(1)**2 + 2*param_counts.unsqueeze(1)) / (x.shape[0] - param_counts.unsqueeze(1) - 1)
-        individual_aicc = aic_corrector - 2 * log_probs
-        probs = self.softmax(individual_aicc)
+        individual_aicc = self._aicc(log_probs, param_counts.unsqueeze(1), x.shape[0])
+        probs = self.softmax(-0.5 * individual_aicc)
 
         for i, model_name in enumerate(self.stats.keys()):
             self.stats[model_name]["model_prob"] = model_probs[i].item()
@@ -351,7 +367,51 @@ class ModelTransfuser():
         std_devs = np.sqrt(np.diag(kde.covariance))
 
         return result.x, std_devs
-    
+
+    #############################################
+    # ----- Information Criterion -----
+    #############################################
+
+    #---------------------------
+    # Corrected Akaike Information Criterion
+    def _aicc(self, log_likelihood, k, n):
+        """
+        Corrected Akaike Information Criterion (AICc).
+
+            AICc = 2k - 2*logL + (2k^2 + 2k) / (n - k - 1)
+
+        where ``k`` is the number of PHYSICAL model parameters (the theta
+        dimension of the model) and ``n`` is the number of observations.
+        The neural-network weight count must NOT be used for ``k``: with
+        k ~ 1e5 and n ~ tens of observations the correction denominator
+        (n - k - 1) is negative and the result is meaningless.
+
+        When ``n - k - 1 <= 0`` the small-sample correction is undefined, so
+        this falls back to the plain AIC (``2k - 2*logL``) for the affected
+        terms and prints a warning once per comparison/plot call.
+
+        ``log_likelihood`` may be a scalar or a tensor; ``k`` and ``n`` may be
+        scalars or tensors broadcastable against it. The return has the
+        broadcast shape.
+        """
+        ll = torch.as_tensor(log_likelihood, dtype=torch.float32)
+        k = torch.as_tensor(k, dtype=torch.float32)
+        n = torch.as_tensor(n, dtype=torch.float32)
+
+        denom = n - k - 1
+        small_sample = denom <= 0
+        if bool(torch.any(small_sample)) and not getattr(self, "_aicc_warned_once", False):
+            print("[compass] Warning: AICc small-sample correction is undefined "
+                  "(n_obs - k - 1 <= 0); falling back to plain AIC (2k - 2*logL) "
+                  "for the affected terms.")
+            self._aicc_warned_once = True
+
+        safe_denom = torch.where(small_sample, torch.ones_like(denom), denom)
+        correction = torch.where(small_sample,
+                                 torch.zeros_like(safe_denom),
+                                 (2 * k ** 2 + 2 * k) / safe_denom)
+        return 2 * k - 2 * ll + correction
+
     ##############################################
     # ----- Plotting -----
     ##############################################
@@ -443,6 +503,7 @@ class ModelTransfuser():
         # Plot cumulative model probabilities
 
         # Calculate mean model probabilities for N observations
+        self._aicc_warned_once = getattr(self, "_aicc_warned_once", False)
         avg_model_probs = []
         for n in range(50):
             all_N_AICc = []
@@ -450,12 +511,12 @@ class ModelTransfuser():
                 if i != 0:
                     idx = torch.randperm(model_log_probs.shape[1])[:i]
                     N_log_probs = model_log_probs[:,idx].T
-                    aic_corrector = 2 * param_counts + (2*param_counts**2 + 2*param_counts) / (i - param_counts - 1)
-                    N_AICc = aic_corrector - 2 * N_log_probs
+                    # k = physical parameter count per model; guard small samples.
+                    N_AICc = self._aicc(N_log_probs, param_counts, i)
                 elif i == 0:
                     N_AICc = torch.zeros_like(model_log_probs[:,0]).unsqueeze(0)
 
-                all_N_AICc.append(torch.nn.functional.softmax(N_AICc.sum(0),0).T)
+                all_N_AICc.append(torch.nn.functional.softmax(-0.5 * N_AICc.sum(0),0).T)
             all_N_AICc = torch.stack(all_N_AICc)
             avg_model_probs.append(all_N_AICc)
 
@@ -512,8 +573,8 @@ class ModelTransfuser():
         if stats_dict is None:
             stats_dict = self.stats
 
-        # Get the best performing model
-        best_model = sorted(stats_dict, key=lambda x: stats_dict[x]["AIC"], reverse=True)[0]
+        # Get the best performing model (lowest AICc).
+        best_model = sorted(stats_dict, key=lambda x: stats_dict[x]["AIC"])[0]
 
         def _plot_heatmap(data, xlabels, ylabels, name, show):
             # Set annotations in the attention blocks
