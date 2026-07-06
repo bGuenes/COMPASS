@@ -729,7 +729,13 @@ class ModelTransfuser():
         ####################
         # Avg Attention between informative Tokens
 
-        data = stats_dict[best_model]["attn_weights"].mean(0).numpy()
+        # attn_weights is (layers, nodes, nodes+1); the sampler may prepend a
+        # batch dimension (num_batches, layers, nodes, nodes+1) -> average it out.
+        attn = stats_dict[best_model]["attn_weights"]
+        if attn.dim() == 4:
+            attn = attn.mean(0)
+
+        data = attn.mean(0).numpy()
         data = data[np.ix_(~self.condition_mask.bool(),torch.cat((self.condition_mask.bool(), torch.tensor([True]))))]
 
         xlabels = list(compress(labels, self.condition_mask)) + ["Bias KV"]
@@ -739,7 +745,7 @@ class ModelTransfuser():
         ####################
         # Layer by Layer Attention
 
-        data = stats_dict[best_model]["attn_weights"].numpy()
+        data = attn.numpy()
 
         # Create a list to hold the data for each layer
         plot_data = []
@@ -749,8 +755,8 @@ class ModelTransfuser():
             param_attention_subset = avg_attention_map[np.ix_(~self.condition_mask.bool(),torch.cat((self.condition_mask.bool(), torch.tensor([True]))))]
             plot_data.append(param_attention_subset)
 
-        # Set up Figure   
-        nrows = stats_dict[best_model]["attn_weights"].shape[2]
+        # Set up Figure: one row per transformer layer
+        nrows = attn.shape[0]
         fig, axes = plt.subplots(
             nrows=nrows, 
             ncols=1, 
