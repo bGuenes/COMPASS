@@ -120,9 +120,14 @@ class Sampler():
         # Check data structure
         data_loader, self.num_observations = self._check_data_structure(data, condition_mask, err)
 
-        # Set up timesteps
-        self.timesteps_list = torch.linspace(1., self.eps, self.timesteps, device=self.device)
-        self.dt = self.timesteps_list[0] - self.timesteps_list[1]
+        # Set up timesteps on a geometric noise-scale grid (log-spaced sigma), which
+        # resolves the small-noise end far better than a uniform time grid
+        one = torch.ones(1, device=self.device)
+        sigma_max = self.sde.marginal_prob_std(one)
+        sigma_min = self.sde.marginal_prob_std(self.eps * one)
+        sigmas = torch.logspace(torch.log10(sigma_max).item(), torch.log10(sigma_min).item(),
+                                self.timesteps, device=self.device)
+        self.timesteps_list = self.sde.time_of_sigma(sigmas)
 
         # Set up Attention Interpretation
         self.return_attn_weights = True
@@ -146,8 +151,6 @@ class Sampler():
                 samples = self._dpm_sampler(data_batch, condition_mask_batch,
                                             order=self.order, snr=self.snr, corrector_steps_interval=self.corrector_steps_interval,
                                             corrector_steps=self.corrector_steps, final_corrector_steps=self.final_corrector_steps)
-            elif self.method == "multi_observation":
-                samples = self._multi_observation_sampler(data_batch, condition_mask_batch)
             else:
                 raise ValueError(f"Sampling method {self.method} not recognized.")
 
@@ -373,18 +376,23 @@ class Sampler():
             
         # Main sampling loop
 
-        for i, t in tqdm.tqdm(enumerate(self.timesteps_list), disable=not self.verbose):
+        for i in tqdm.tqdm(range(self.timesteps-1), disable=not self.verbose):
 
-            t = t.reshape(-1, 1)
-            
+            t = self.timesteps_list[i].reshape(-1, 1)
+            t_next = self.timesteps_list[i+1].reshape(-1, 1)
+
             # Get score estimate
             score = self._get_score(data, t, condition_mask, self.cfg_alpha)
-            
-            # Update step
-            dx = self.sde.sigma**(2*t) * score * self.dt
-            
+
+            # Euler-Maruyama step of the reverse SDE. Integrated over one step,
+            # g(t)^2 dt equals the decrease of the marginal variance sigma_m^2:
+            # dx = dvar * score + sqrt(dvar) * z
+            dvar = self.sde.marginal_prob_std(t)**2 - self.sde.marginal_prob_std(t_next)**2
+            dx = dvar * score
+            noise = torch.randn_like(data) * torch.sqrt(dvar)
+
             # Apply update respecting condition mask
-            data = data + dx * (1-condition_mask)
+            data = data + (dx + noise) * (1-condition_mask)
             
             if self.save_trajectory:
                 # Store trajectory data
@@ -423,32 +431,41 @@ class Sampler():
         return x
 
     def _dpm_solver_1_step(self, data_t, t, t_next, condition_mask):
-        """First-order solver"""
+        """First-order solver (in noise-scale space).
+
+        The probability-flow ODE dx = 1/2 g(t)^2 * score * dt is, in terms of the
+        marginal noise scale sigma_m(t) (with g^2 = d sigma_m^2/dt), exactly
+        dx = sigma_m * score * d(sigma_m) -- so the solver steps in d(sigma_m),
+        not in dt.
+        """
         sigma_now = self.sde.sigma_t(t)
+        sigma_next = self.sde.sigma_t(t_next)
+        h = sigma_now - sigma_next
 
         # First-order step
         score_now = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
-        data_next = data_t + (t-t_next) * sigma_now * score_now * (1-condition_mask)
+        data_next = data_t + h * sigma_now * score_now * (1-condition_mask)
 
         return data_next
-    
+
     def _dpm_solver_2_step(self, data_t, t, t_next, condition_mask):
-        """Second-order solver"""
+        """Second-order solver (in noise-scale space)"""
         sigma_now = self.sde.sigma_t(t)
         sigma_next = self.sde.sigma_t(t_next)
+        h = sigma_now - sigma_next
 
         # First-order step
         score_half = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
-        data_half = data_t + (t-t_next) * sigma_now * score_half * (1-condition_mask)
+        data_half = data_t + h * sigma_now * score_half * (1-condition_mask)
 
-        # Second-order step
+        # Second-order (Heun) step
         score_next = self._get_score(data_half, t_next, condition_mask, self.cfg_alpha)
-        data_next = data_t + 0.5 * (t-t_next) * (sigma_now**2 * score_half + sigma_next**2 * score_next) * (1-condition_mask)
+        data_next = data_t + 0.5 * h * (sigma_now * score_half + sigma_next * score_next) * (1-condition_mask)
 
         return data_next
-    
+
     def _dpm_solver_3_step(self, data_t, t, t_next, condition_mask):
-        """Third-order solver"""
+        """Third-order solver (in noise-scale space)"""
         # Get sigma values at different time points
         sigma_t = self.sde.sigma_t(t)
         t_mid = (t + t_next) / 2
@@ -457,23 +474,23 @@ class Sampler():
 
         # First calculate the intermediate score at time t
         score_t = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
-        
+
         # First intermediate point (Euler step)
-        data_mid1 = data_t + (t - t_mid) * sigma_t * score_t * (1-condition_mask)
-        
+        data_mid1 = data_t + (sigma_t - sigma_mid) * sigma_t * score_t * (1-condition_mask)
+
         # Get score at the first intermediate point
         score_mid1 = self._get_score(data_mid1, t_mid, condition_mask, self.cfg_alpha)
-        
+
         # Second intermediate point (using first intermediate)
-        data_mid2 = data_t + (t - t_mid) * ((1/3) * sigma_t * score_t + (2/3) * sigma_mid * score_mid1) * (1-condition_mask)
-        
+        data_mid2 = data_t + (sigma_t - sigma_mid) * ((1/3) * sigma_t * score_t + (2/3) * sigma_mid * score_mid1) * (1-condition_mask)
+
         # Get score at the second intermediate point
         score_mid2 = self._get_score(data_mid2, t_mid, condition_mask, self.cfg_alpha)
-        
+
         # Final step using all information
-        data_next = data_t + (t - t_next) * ((1/4) * sigma_t * score_t + 
+        data_next = data_t + (sigma_t - sigma_next) * ((1/4) * sigma_t * score_t +
                                             (3/4) * sigma_next * score_mid2) * (1-condition_mask)
-        
+
         return data_next
 
     def _dpm_sampler(self, data, condition_mask, 

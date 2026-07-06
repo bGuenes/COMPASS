@@ -47,6 +47,13 @@ class VESDE():
         """
         return self.marginal_prob_std(t)
 
+    def time_of_sigma(self, sigma):
+        """
+        Inverse of marginal_prob_std: the diffusion time t at which the marginal
+        noise standard deviation equals `sigma`.
+        """
+        return torch.log(1.0 + 2.0 * torch.log(self.sigma) * sigma**2) / (2.0 * torch.log(self.sigma))
+
 #############################################
 # ----- VPSDE -----
 #############################################

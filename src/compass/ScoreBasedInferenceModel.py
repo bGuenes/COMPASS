@@ -84,9 +84,10 @@ class ScoreBasedInferenceModel(nn.Module):
     # ----- Training -----
     #############################################
     
-    def train(self, theta, x, theta_val=None, x_val=None, 
-                batch_size=128, max_epochs=500, lr=1e-3, device="cpu", 
-                verbose=True, path=None, name="Model", early_stopping_patience=20):
+    def train(self, theta, x, theta_val=None, x_val=None,
+                batch_size=128, max_epochs=500, lr=1e-3, device="cpu",
+                verbose=True, path=None, name="Model", early_stopping_patience=20,
+                time_sampling="mixture"):
         """
         Train the model on the provided data
 
@@ -103,11 +104,14 @@ class ScoreBasedInferenceModel(nn.Module):
             verbose: Whether to show training progress
             path: Path to save model
             early_stopping_patience: Number of epochs to wait before early stopping
+            time_sampling: Diffusion-time sampling scheme during training
+                    ("mixture" (default), "uniform" or "log_sigma"); see Trainer.train
         """
 
         # Combine theta and x into a single tensor
         # train_data: (num_samples, node_size)
         train_data = torch.cat([theta, x], dim=1)
+        val_data = None
         if theta_val is not None and x_val is not None:
             val_data = torch.cat([theta_val, x_val], dim=1)
 
@@ -118,7 +122,7 @@ class ScoreBasedInferenceModel(nn.Module):
 
         self.trainer.train(world_size=world_size, train_data=train_data, val_data=val_data,
                             max_epochs=max_epochs, early_stopping_patience=early_stopping_patience, batch_size=batch_size, lr=lr,
-                            path=path, name=name, device=device, verbose=verbose)
+                            path=path, name=name, device=device, verbose=verbose, time_sampling=time_sampling)
 
     #############################################
     # ----- Sample -----
@@ -126,6 +130,8 @@ class ScoreBasedInferenceModel(nn.Module):
         
     def sample(self, theta=None, x=None, err=None, condition_mask=None,
                timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
+               prior=None, correction="gauss", posterior_precision=None,
+               precision_est_samples=500, precision_est_timesteps=None, denoise_clamp=5.0,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cpu", verbose=True, method="dpm", save_trajectory=False):
         """
@@ -139,6 +145,20 @@ class ScoreBasedInferenceModel(nn.Module):
             eps: End time for diffusion process
             num_samples: Number of samples to generate
             cfg_alpha: Classifier-free guidance strength
+
+            - Multi-observation (compositional score modeling) parameters -
+            multi_obs_inference: Treat the rows of x as i.i.d. observations of the same
+                    underlying parameters and sample the joint posterior p(theta | x_1..x_n)
+            hierarchy: Indices of the shared (global) parameters composed across
+                    observations (defaults to all latent variables)
+            prior: Gaussian prior over the hierarchy dimensions as a tuple (mean, std),
+                    each of length len(hierarchy). Defaults to N(0, 1).
+            correction: Score composition rule: "gauss" (default), "uncorrected" or "fnpe"
+            posterior_precision: Optional precision estimate of the single-observation
+                    posteriors on the hierarchy dimensions (for correction="gauss");
+                    estimated automatically if not provided
+            precision_est_samples: Samples per observation for the automatic estimate
+            precision_est_timesteps: Diffusion steps for the automatic estimate
 
             - DPM-Solver parameters -
             order: Order of DPM-Solver (1, 2 or 3)
@@ -192,6 +212,9 @@ class ScoreBasedInferenceModel(nn.Module):
         elif multi_obs_inference == True:
             # Hierarchical Compositional Score Modeling
             samples = self.multi_obs_sampler.sample(world_size=world_size, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, hierarchy=hierarchy,
+                                      prior=prior, correction=correction, posterior_precision=posterior_precision,
+                                      precision_est_samples=precision_est_samples, precision_est_timesteps=precision_est_timesteps,
+                                      denoise_clamp=denoise_clamp,
                                       order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                       verbose=verbose, method=method, save_trajectory=save_trajectory)
 

@@ -44,8 +44,8 @@ class Trainer():
     #############################################
     def train(self, world_size, train_data, val_data=None,
               max_epochs=500, early_stopping_patience=20, batch_size=128, lr=1e-3,
-              path=None, name="Model", device="cpu", verbose=True):
-        
+              path=None, name="Model", device="cpu", verbose=True, time_sampling="mixture"):
+
         """
         Training function for the score prediction task
 
@@ -62,6 +62,14 @@ class Trainer():
             name: Name of the model
             device: Device to use
             verbose: Verbosity
+            time_sampling: How diffusion times are drawn during training:
+                    "uniform": t ~ U(eps, 1). Under a VESDE this severely
+                        undersamples small noise scales (only ~1% of draws reach
+                        sigma_m < 0.1 for sigma=25), leaving the score network
+                        inaccurate exactly where posteriors are resolved.
+                    "log_sigma": noise scales log-uniform between sigma_m(eps)
+                        and sigma_m(1).
+                    "mixture" (default): 50/50 mix of both.
         """
         start_time = time.time()
 
@@ -82,6 +90,7 @@ class Trainer():
         self.name_checkpoint = f"{self.name}_checkpoint"
         self.verbose = verbose
         self.eps = 1e-3 # Epsilon for numerical stability and endpoint in diffusion process
+        self.time_sampling = time_sampling
 
         if self.world_size > 1:
             mp.spawn(self._train_loop, args=(train_data, val_data), nprocs=self.world_size)
@@ -230,7 +239,7 @@ class Trainer():
         data, condition_mask, idx = self._prepare_batch(batch, self.device)
 
         # Get timesteps
-        timesteps = torch.rand(data.shape[0], 1, device=self.device) * (1.-self.eps)+self.eps
+        timesteps = self._sample_timesteps(data.shape[0])
 
         # Sample x_1 from noise distribution
         x_1 = torch.randn_like(data)*(1-condition_mask) + data*condition_mask
@@ -242,6 +251,24 @@ class Trainer():
         loss = self.loss_fn(score, timesteps, x_1, condition_mask)
 
         return loss
+
+    def _sample_timesteps(self, batch_size):
+        """Draw diffusion times according to the configured time_sampling scheme."""
+        t_uniform = torch.rand(batch_size, 1, device=self.device) * (1. - self.eps) + self.eps
+        if self.time_sampling == "uniform":
+            return t_uniform
+
+        # Log-uniform in the marginal noise scale sigma_m(t)
+        sigma_max = self.sde.marginal_prob_std(torch.ones(1, device=self.device))
+        sigma_min = self.sde.marginal_prob_std(torch.full((1,), self.eps, device=self.device))
+        u = torch.rand(batch_size, 1, device=self.device)
+        t_log_sigma = self.sde.time_of_sigma(sigma_min * (sigma_max / sigma_min)**u)
+        if self.time_sampling == "log_sigma":
+            return t_log_sigma
+
+        # 50/50 mixture of both
+        pick = (torch.rand(batch_size, 1, device=self.device) < 0.5).float()
+        return pick * t_uniform + (1 - pick) * t_log_sigma
 
     #############################################
     # ----- Loss Function -----
