@@ -6,6 +6,7 @@ from .SDE import VESDE, VPSDE
 from .Sampler import Sampler
 from .Trainer import Trainer
 from .MultiObsSampler import MultiObsSampler
+from .PFODE import PFODE
 
 #################################################################################################
 # ///////////////////////////////////// Diffusion Model /////////////////////////////////////////
@@ -17,18 +18,22 @@ class ScoreBasedInferenceModel(nn.Module):
             nodes_size,         # Number of features in joint (theta, x)
             sde_type="vesde",   # Type of Stochastic Differential Equation (SDE)
             sigma=25.0,         # Variance for VESDE
+            beta_min=0.1,       # Minimum beta for VPSDE
+            beta_max=20.0,      # Maximum beta for VPSDE
             hidden_size=128,    # Hidden size of the transformer
             depth=6,            # Number of transformer blocks
             num_heads=16,       # Number of attention heads
             mlp_ratio=4,        # Ratio of MLP hidden size to embedding size
             device="cpu"        # Device to initialize the model on
             ):
-        
+
         super(ScoreBasedInferenceModel, self).__init__()
 
         self.nodes_size = nodes_size
         self.sde_type = sde_type
         self.sigma = sigma
+        self.beta_min = beta_min
+        self.beta_max = beta_max
         self.hidden_size = hidden_size
         self.depth = depth
         self.num_heads = num_heads
@@ -39,7 +44,7 @@ class ScoreBasedInferenceModel(nn.Module):
         if sde_type == "vesde":
             self.sde = VESDE(sigma=self.sigma)
         elif sde_type == "vpsde":
-            self.sde = VPSDE()
+            self.sde = VPSDE(beta_min=beta_min, beta_max=beta_max)
         else:
             raise ValueError("Invalid SDE type")
         
@@ -54,6 +59,9 @@ class ScoreBasedInferenceModel(nn.Module):
         # Init Sampler
         self.sampler = Sampler(self)
         self.multi_obs_sampler = MultiObsSampler(self)
+
+        # Init probability-flow ODE engine (log-probability evaluation, MAP)
+        self.pfode = PFODE(self)
         
     #############################################
     # ----- Forward Diffusion -----
@@ -68,8 +76,11 @@ class ScoreBasedInferenceModel(nn.Module):
         if x_1 is None:
             x_1 = torch.randn_like(x_0)*(1-condition_mask)+(condition_mask)*x_0
 
+        # Perturbation kernel p_0t(x_t|x_0) = N(alpha_t x_0, sigma_t^2) on the
+        # latent dims; conditioned dims stay clean. VESDE: alpha_t = 1.
         std = self.sde.marginal_prob_std(t).reshape(-1, 1).to(x_0.device)
-        x_t = x_0 + std * x_1 * (1-condition_mask)
+        alpha = self.sde.alpha_t(t).reshape(-1, 1).to(x_0.device)
+        x_t = x_0 * (alpha * (1-condition_mask) + condition_mask) + std * x_1 * (1-condition_mask)
         return x_t
     
     #############################################
@@ -211,6 +222,10 @@ class ScoreBasedInferenceModel(nn.Module):
             
         elif multi_obs_inference == True:
             # Hierarchical Compositional Score Modeling
+            if self.sde_type != "vesde":
+                raise NotImplementedError(
+                    "Multi-observation (compositional) inference currently assumes a "
+                    "VESDE; the composition corrections are not implemented for the VPSDE.")
             samples = self.multi_obs_sampler.sample(world_size=world_size, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, hierarchy=hierarchy,
                                       prior=prior, correction=correction, posterior_precision=posterior_precision,
                                       precision_est_samples=precision_est_samples, precision_est_timesteps=precision_est_timesteps,
@@ -224,23 +239,69 @@ class ScoreBasedInferenceModel(nn.Module):
         return samples
     
     #############################################
+    # ----- Log-probability (PF-ODE) -----
+    #############################################
+
+    def log_prob(self, data, condition_mask, timesteps=100, eps=1e-3,
+                 divergence="exact", hutchinson_samples=32,
+                 device="cpu", batch_size=4096, verbose=False):
+        """
+        Evaluate the log-probability of the latent dimensions of `data` given its
+        conditioned dimensions with the probability-flow ODE (no KDE involved).
+
+        With the parameters theta conditioned (condition_mask 1 on theta, 0 on x)
+        this returns the model likelihood log p(x | theta); with the observations
+        conditioned it returns the posterior log p(theta | x).
+
+        Args:
+            data:           Joint (theta, x) node vectors, shape (num_points, nodes_size).
+                            Conditioned dims hold the conditioning values, latent dims
+                            the point the density is evaluated at.
+            condition_mask: Binary mask (1 = conditioned, 0 = latent),
+                            shape (nodes_size,) or (num_points, nodes_size).
+            timesteps:      Integration nodes of the 2nd-order Heun solver.
+            eps:            Diffusion end time (density is smoothed by sigma(eps)).
+            divergence:     "exact" (default) or "hutchinson".
+            hutchinson_samples: Probe vectors if divergence="hutchinson".
+            device:         Device to run on.
+            batch_size:     Points per integration batch.
+            verbose:        Show a progress bar.
+
+        Returns:
+            Tensor (num_points,) of log-probabilities on CPU.
+        """
+        return self.pfode.log_prob(data=data, condition_mask=condition_mask,
+                                   timesteps=timesteps, eps=eps,
+                                   divergence=divergence, hutchinson_samples=hutchinson_samples,
+                                   device=device, batch_size=batch_size, verbose=verbose)
+
+    def map_estimate(self, data, condition_mask, **kwargs):
+        """
+        KDE-free MAP estimate of the latent dimensions of `data` given its
+        conditioned dimensions via annealed score ascent (see PFODE.map_estimate).
+        """
+        return self.pfode.map_estimate(data=data, condition_mask=condition_mask, **kwargs)
+
+    #############################################
     # ----- Save & Load -----
     #############################################
-    
+
     def save(self, path, name="Model"):
         state_dict = {
                 'model_state_dict' : self.model.state_dict(),
                 'nodes_size': self.nodes_size,
                 'sde_type': self.sde_type,
                 'sigma': self.sigma,
+                'beta_min': self.beta_min,
+                'beta_max': self.beta_max,
                 'hidden_size': self.hidden_size,
                 'depth': self.depth,
                 'num_heads': self.num_heads,
                 'mlp_ratio': self.mlp_ratio
             }
-        
+
         torch.save(state_dict, f"{path}/{name}.pt")
-        
+
     @staticmethod
     def load(path, device=None):
 
@@ -254,6 +315,8 @@ class ScoreBasedInferenceModel(nn.Module):
             nodes_size=checkpoint['nodes_size'],
             sde_type=checkpoint['sde_type'],
             sigma=checkpoint['sigma'],
+            beta_min=checkpoint.get('beta_min', 0.1),
+            beta_max=checkpoint.get('beta_max', 20.0),
             hidden_size=checkpoint['hidden_size'],
             depth=checkpoint['depth'],
             num_heads=checkpoint['num_heads'],

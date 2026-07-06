@@ -120,14 +120,16 @@ class Sampler():
         # Check data structure
         data_loader, self.num_observations = self._check_data_structure(data, condition_mask, err)
 
-        # Set up timesteps on a geometric noise-scale grid (log-spaced sigma), which
-        # resolves the small-noise end far better than a uniform time grid
+        # Set up timesteps on a geometric noise-scale grid (log-spaced lambda), which
+        # resolves the small-noise end far better than a uniform time grid.
+        # lambda(t) = sigma(t)/alpha(t) is the noise scale of the rescaled state
+        # y = x/alpha(t); for the VESDE (alpha=1) it equals sigma(t).
         one = torch.ones(1, device=self.device)
-        sigma_max = self.sde.marginal_prob_std(one)
-        sigma_min = self.sde.marginal_prob_std(self.eps * one)
-        sigmas = torch.logspace(torch.log10(sigma_max).item(), torch.log10(sigma_min).item(),
-                                self.timesteps, device=self.device)
-        self.timesteps_list = self.sde.time_of_sigma(sigmas)
+        lam_max = self.sde.lambda_t(one)
+        lam_min = self.sde.lambda_t(self.eps * one)
+        lams = torch.logspace(torch.log10(lam_max).item(), torch.log10(lam_min).item(),
+                              self.timesteps, device=self.device)
+        self.timesteps_list = self.sde.time_of_lambda(lams)
 
         # Set up Attention Interpretation
         self.return_attn_weights = True
@@ -153,6 +155,11 @@ class Sampler():
                                             corrector_steps=self.corrector_steps, final_corrector_steps=self.final_corrector_steps)
             else:
                 raise ValueError(f"Sampling method {self.method} not recognized.")
+
+            # Solvers run in the rescaled y-space; convert back to x = alpha * y
+            # on the latent dims (alpha = 1 for VESDE).
+            alpha_end = self.sde.alpha_t(self.timesteps_list[-1]).to(samples.device)
+            samples = samples * (alpha_end * (1 - condition_mask_batch) + condition_mask_batch)
 
             # Store samples
             all_samples.append(samples)
@@ -227,12 +234,17 @@ class Sampler():
 
     def _get_score(self, x, t, condition_mask, cfg_alpha=None):
         """Get score estimate with optional classifier-free guidance.
-        
-        Handles both 2D input (num_samples, nodes_size) and 
+
+        The samplers operate on the rescaled state y = x/alpha(t) (identical to x
+        for the VESDE); this converts to x-space for the network and returns the
+        rescaled score s_y = alpha * s_x, so all integrators can step in the
+        noise scale lambda(t) = sigma(t)/alpha(t).
+
+        Handles both 2D input (num_samples, nodes_size) and
         3D input (num_obs, num_samples, nodes_size) by flattening.
         """
         input_shape = x.shape
-        
+
         # Flatten if 3D: (num_obs, num_samples, N) → (num_obs * num_samples, N)
         if x.dim() == 3:
             num_obs, num_samples, nodes_size = x.shape
@@ -241,7 +253,11 @@ class Sampler():
         else:
             x_flat = x
             c_flat = condition_mask
-    
+
+        # y -> x on the latent dims (conditioned dims are never diffused/scaled)
+        alpha = self.sde.alpha_t(t).to(x_flat.device)
+        x_flat = x_flat * (alpha * (1 - c_flat) + c_flat)
+
         with torch.no_grad():
             # Attention weight extraction (only once per sampling run)
             if (abs(t.flatten()[0].item() - self.attn_weights_time.item()) < 1e-6 
@@ -266,10 +282,13 @@ class Sampler():
             else:
                 score = score_cond
     
+        # Rescale to y-space score: s_y = alpha * s_x (alpha = 1 for VESDE)
+        score = alpha * score
+
         # Unflatten back to original shape
         if len(input_shape) == 3:
             score = score.reshape(input_shape)
-        
+
         return score
 
     def _check_data_shape(self, data, condition_mask, err):
@@ -344,11 +363,12 @@ class Sampler():
     def _initial_sample(self, data, condition_mask):
         # Initialize with noise
         # Draw samples from initial noise distribution for latent variables
+        # (in the rescaled y-space: y_1 ~ N(0, lambda(1)^2); equals sigma(1) for VESDE)
         # Keep observed variables fixed
 
-        random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * torch.randn_like(data) * (1-condition_mask)
+        random_noise_samples = self.sde.lambda_t(torch.ones_like(data)) * torch.randn_like(data) * (1-condition_mask)
 
-        data += random_noise_samples     
+        data += random_noise_samples
         return data
   
     #############################################
@@ -384,10 +404,11 @@ class Sampler():
             # Get score estimate
             score = self._get_score(data, t, condition_mask, self.cfg_alpha)
 
-            # Euler-Maruyama step of the reverse SDE. Integrated over one step,
-            # g(t)^2 dt equals the decrease of the marginal variance sigma_m^2:
-            # dx = dvar * score + sqrt(dvar) * z
-            dvar = self.sde.marginal_prob_std(t)**2 - self.sde.marginal_prob_std(t_next)**2
+            # Euler-Maruyama step of the reverse SDE in the rescaled y-space,
+            # where the process is variance exploding with noise scale lambda(t).
+            # Integrated over one step the effective g^2 dt equals the decrease of
+            # lambda^2: dy = dvar * score + sqrt(dvar) * z  (lambda = sigma for VESDE)
+            dvar = self.sde.lambda_t(t)**2 - self.sde.lambda_t(t_next)**2
             dx = dvar * score
             noise = torch.randn_like(data) * torch.sqrt(dvar)
 
@@ -420,12 +441,12 @@ class Sampler():
             # Get score estimate
             score = self._get_score(x, t, condition_mask, cfg_alpha)
             
-            # Langevin dynamics update
-            noise_scale = torch.sqrt(snr * 2 * self.sde.marginal_prob_std(t)**2)
+            # Langevin dynamics update (in y-space, step size set by lambda(t))
+            noise_scale = torch.sqrt(snr * 2 * self.sde.lambda_t(t)**2)
             noise = torch.randn_like(x) * noise_scale
-            
+
             # Update x with the score and noise, respecting the condition mask
-            grad_step = snr * self.sde.marginal_prob_std(t)**2 * score
+            grad_step = snr * self.sde.lambda_t(t)**2 * score
             x = x + grad_step * (1-condition_mask) + noise * (1-condition_mask)
 
         return x
@@ -438,8 +459,8 @@ class Sampler():
         dx = sigma_m * score * d(sigma_m) -- so the solver steps in d(sigma_m),
         not in dt.
         """
-        sigma_now = self.sde.sigma_t(t)
-        sigma_next = self.sde.sigma_t(t_next)
+        sigma_now = self.sde.lambda_t(t)
+        sigma_next = self.sde.lambda_t(t_next)
         h = sigma_now - sigma_next
 
         # First-order step
@@ -450,8 +471,8 @@ class Sampler():
 
     def _dpm_solver_2_step(self, data_t, t, t_next, condition_mask):
         """Second-order solver (in noise-scale space)"""
-        sigma_now = self.sde.sigma_t(t)
-        sigma_next = self.sde.sigma_t(t_next)
+        sigma_now = self.sde.lambda_t(t)
+        sigma_next = self.sde.lambda_t(t_next)
         h = sigma_now - sigma_next
 
         # First-order step
@@ -467,10 +488,10 @@ class Sampler():
     def _dpm_solver_3_step(self, data_t, t, t_next, condition_mask):
         """Third-order solver (in noise-scale space)"""
         # Get sigma values at different time points
-        sigma_t = self.sde.sigma_t(t)
+        sigma_t = self.sde.lambda_t(t)
         t_mid = (t + t_next) / 2
-        sigma_mid = self.sde.sigma_t(t_mid)
-        sigma_next = self.sde.sigma_t(t_next)
+        sigma_mid = self.sde.lambda_t(t_mid)
+        sigma_next = self.sde.lambda_t(t_next)
 
         # First calculate the intermediate score at time t
         score_t = self._get_score(data_t, t, condition_mask, self.cfg_alpha)

@@ -204,7 +204,9 @@ class ModelTransfuser():
     def compare(self, x, err=None, condition_mask=None,
                timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
-               device="cuda", verbose=False, method="dpm"):
+               device="cuda", verbose=False, method="dpm",
+               likelihood_method="pfode", map_method="score", criterion="aic",
+               log_prob_timesteps=100):
         """
         Compare the models on the provided observations.
         The results are saved in the self.stats dictionary and the provided path.
@@ -216,7 +218,7 @@ class ModelTransfuser():
                                 Shape: (num_samples, num_obs_features)
             condition_mask: (optional) Binary mask indicating observed values (1) and latent values (0).
                                 Should be provided if the there are missing observations in the data.
-                                If not provided, it is assumed, that 
+                                If not provided, it is assumed, that
                                 Shape: (num_samples, num_total_features)
             timesteps:      Number of timesteps for the diffusion process.
                                 (default) - 50 timesteps
@@ -235,16 +237,41 @@ class ModelTransfuser():
             method:         (string) Method used to solve the SDE during inference.
                                 "dpm"   - (default) Using the DPM-Solver for infernce with order 'order'
                                 "euler" - Using the Euler-Maruyama method for inference
+            likelihood_method: (string) How the per-observation likelihood
+                                log p(x_i | theta_MAP,i) is evaluated:
+                                "pfode" - (default) directly through the probability-flow
+                                          ODE of the score model (exact continuous
+                                          normalizing-flow likelihood, no KDE, no
+                                          likelihood sampling step needed).
+                                "kde"   - legacy behavior: sample from the likelihood and
+                                          evaluate a Gaussian KDE of the samples at x_i.
+            map_method:     (string) How the posterior MAP is estimated:
+                                "score" - (default) KDE-free annealed score ascent using
+                                          the trained score network (mean-shift on the
+                                          diffused posterior), initialized at the
+                                          posterior sample mean.
+                                "kde"   - legacy behavior: mode of a Gaussian KDE fitted
+                                          to the posterior samples.
+            criterion:      (string) Information criterion for model weights:
+                                "aic"   - (default) corrected Akaike IC (AICc)
+                                "bic"   - Bayesian (Schwarz) IC: k*ln(n) - 2*logL
+            log_prob_timesteps: Integration nodes of the PF-ODE likelihood solver.
         """
 
         if not self.trained_models:
             print("Models are not trained or provided. Please train the models before comparing.")
             return
-        
+
+        if criterion not in ("aic", "bic"):
+            raise ValueError(f"criterion must be 'aic' or 'bic', got '{criterion}'")
+
         self.stats = {}
         self.model_null_log_probs = {}
         self.softmax = nn.Softmax(dim=0)
         self._aicc_warned_once = False
+        self.criterion = criterion
+        self.likelihood_method = likelihood_method
+        self.map_method = map_method
 
         # Remember whether the user explicitly supplied a condition mask. If not,
         # it must be rebuilt per model because different models can have a
@@ -272,27 +299,64 @@ class ModelTransfuser():
             # Inference Attention weights
             self.stats[model_name]["attn_weights"] = model.sampler.all_attn_weights
 
+            ####################
             # MAP estimation
-            theta_hat = np.array([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
-            MAP_posterior, std_MAP_posterior = torch.tensor(theta_hat[:,0], dtype=torch.float), torch.tensor(theta_hat[:,1], dtype=torch.float)
+            x_t = torch.as_tensor(x, dtype=torch.float32)
+            c_bool = condition_mask.bool()
+
+            if map_method == "kde":
+                theta_hat = np.array([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
+                MAP_posterior = torch.tensor(theta_hat[:, 0], dtype=torch.float)
+                std_MAP_posterior = torch.tensor(theta_hat[:, 1], dtype=torch.float)
+            elif map_method == "score":
+                # Annealed score ascent (mean-shift with the trained score network):
+                # no KDE bandwidth bias, works in any dimension. Initialized at the
+                # posterior sample mean, annealed from the posterior scale downwards.
+                post_mean = torch.tensor(posterior_samples.mean(axis=1), dtype=torch.float)
+                post_std = torch.tensor(posterior_samples.std(axis=1), dtype=torch.float)
+                joint_init = torch.zeros(x_t.shape[0], model.nodes_size)
+                joint_init[:, c_bool] = x_t
+                joint_init[:, ~c_bool] = post_mean
+                joint_map = model.map_estimate(joint_init, condition_mask,
+                                               sigma_start=2.0 * post_std.max().item(),
+                                               device=device)
+                MAP_posterior = joint_map[:, ~c_bool].float()
+                std_MAP_posterior = post_std
+                theta_hat = np.stack([MAP_posterior.numpy(), std_MAP_posterior.numpy()], axis=1)
+            else:
+                raise ValueError(f"map_method must be 'score' or 'kde', got '{map_method}'")
 
             # Storing MAP and std MAP
             self.stats[model_name]["MAP"] = theta_hat
 
             ####################
-            # Likelihood sampling
-            likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=(1-condition_mask),
-                                            timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
-                                            multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
-                                            order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
-                                            device=device, verbose=verbose, method=method)
-            likelihood_samples = likelihood_samples.cpu().numpy()
+            # Likelihood evaluation
+            if likelihood_method == "pfode":
+                # Direct likelihood log p(x_i | theta_MAP,i) through the
+                # probability-flow ODE: conditions the score model on the MAP of
+                # all latent dims and evaluates the exact model density at x_i.
+                # No likelihood sampling and no KDE involved.
+                joint_eval = torch.zeros(x_t.shape[0], model.nodes_size)
+                joint_eval[:, c_bool] = x_t
+                joint_eval[:, ~c_bool] = MAP_posterior
+                log_probs = model.log_prob(joint_eval, condition_mask=(1 - condition_mask),
+                                           timesteps=log_prob_timesteps, eps=eps,
+                                           device=device, verbose=verbose).float()
+            elif likelihood_method == "kde":
+                # Legacy: sample from the likelihood at the MAP and evaluate a KDE
+                likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=(1-condition_mask),
+                                                timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+                                                multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
+                                                order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                                device=device, verbose=verbose, method=method)
+                likelihood_samples = likelihood_samples.cpu().numpy()
+                log_probs = torch.tensor([self._log_prob(likelihood_samples[i], x[i]) for i in range(len(x))])
+            else:
+                raise ValueError(f"likelihood_method must be 'pfode' or 'kde', got '{likelihood_method}'")
 
-            # Log probability of likelihood
-            log_probs = torch.tensor([self._log_prob(likelihood_samples[i], x[i]) for i in range(len(x))])
             self.stats[model_name]["log_probs"] = log_probs
 
-            # AICc calculation.
+            # Information criterion calculation.
             # k must be the number of PHYSICAL model parameters (the theta
             # dimension of this model), NOT the neural-network weight count.
             # The posterior samples are already sliced to the latent (theta)
@@ -304,7 +368,7 @@ class ModelTransfuser():
             # Per-observation AICc (guards the small-sample term automatically),
             # summed over observations to match the per-observation formulation
             # used for obs_probs and the cumulative plot.
-            aicc_per_obs = self._aicc(log_probs, param_count, sample_size)
+            aicc_per_obs = self._ic(log_probs, param_count, sample_size)
             self.stats[model_name]["AIC"] = aicc_per_obs.sum()
 
 
@@ -318,7 +382,7 @@ class ModelTransfuser():
         # Calculate Probability of each observation
         param_counts = torch.tensor([self.stats[model_name]["param_count"] for model_name in self.stats.keys()])
         log_probs = torch.stack([self.stats[model_name]["log_probs"] for model_name in self.stats.keys()])
-        individual_aicc = self._aicc(log_probs, param_counts.unsqueeze(1), x.shape[0])
+        individual_aicc = self._ic(log_probs, param_counts.unsqueeze(1), x.shape[0])
         probs = self.softmax(-0.5 * individual_aicc)
 
         for i, model_name in enumerate(self.stats.keys()):
@@ -371,6 +435,39 @@ class ModelTransfuser():
     #############################################
     # ----- Information Criterion -----
     #############################################
+
+    #---------------------------
+    # Criterion dispatcher
+    def _ic(self, log_likelihood, k, n):
+        """
+        Per-observation information criterion, dispatching on the criterion
+        selected in `compare()` ("aic" -> AICc (default), "bic" -> BIC).
+        """
+        if getattr(self, "criterion", "aic") == "bic":
+            return self._bic(log_likelihood, k, n)
+        return self._aicc(log_likelihood, k, n)
+
+    #---------------------------
+    # Bayesian (Schwarz) Information Criterion
+    def _bic(self, log_likelihood, k, n):
+        """
+        Bayesian Information Criterion (BIC):
+
+            BIC = k * ln(n) - 2 * logL
+
+        with ``k`` the number of PHYSICAL model parameters and ``n`` the number
+        of observations. Applied per observation (mirroring the per-observation
+        AICc convention used throughout): each observation term carries the full
+        k*ln(n) penalty. BIC penalizes parameters more strongly than AIC for
+        n >= 8 and is consistent (selects the true model as n -> inf) when the
+        true model is among the candidates.
+        """
+        ll = torch.as_tensor(log_likelihood, dtype=torch.float32)
+        k = torch.as_tensor(k, dtype=torch.float32)
+        n = torch.as_tensor(n, dtype=torch.float32)
+        # Guard n < 1 (cumulative plot evaluates n = 0 terms elsewhere)
+        n = torch.clamp(n, min=1.0)
+        return k * torch.log(n) - 2 * ll
 
     #---------------------------
     # Corrected Akaike Information Criterion
@@ -512,7 +609,7 @@ class ModelTransfuser():
                     idx = torch.randperm(model_log_probs.shape[1])[:i]
                     N_log_probs = model_log_probs[:,idx].T
                     # k = physical parameter count per model; guard small samples.
-                    N_AICc = self._aicc(N_log_probs, param_counts, i)
+                    N_AICc = self._ic(N_log_probs, param_counts, i)
                 elif i == 0:
                     N_AICc = torch.zeros_like(model_log_probs[:,0]).unsqueeze(0)
 

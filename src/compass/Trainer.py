@@ -258,11 +258,12 @@ class Trainer():
         if self.time_sampling == "uniform":
             return t_uniform
 
-        # Log-uniform in the marginal noise scale sigma_m(t)
-        sigma_max = self.sde.marginal_prob_std(torch.ones(1, device=self.device))
-        sigma_min = self.sde.marginal_prob_std(torch.full((1,), self.eps, device=self.device))
+        # Log-uniform in the noise scale lambda(t) = sigma(t)/alpha(t)
+        # (equals sigma_m(t) for the VESDE)
+        lam_max = self.sde.lambda_t(torch.ones(1, device=self.device))
+        lam_min = self.sde.lambda_t(torch.full((1,), self.eps, device=self.device))
         u = torch.rand(batch_size, 1, device=self.device)
-        t_log_sigma = self.sde.time_of_sigma(sigma_min * (sigma_max / sigma_min)**u)
+        t_log_sigma = self.sde.time_of_lambda(lam_min * (lam_max / lam_min)**u)
         if self.time_sampling == "log_sigma":
             return t_log_sigma
 
@@ -361,6 +362,8 @@ class Trainer():
                 'nodes_size': self.SBIm.nodes_size,
                 'sde_type': self.SBIm.sde_type,
                 'sigma': self.SBIm.sigma,
+                'beta_min': self.SBIm.beta_min,
+                'beta_max': self.SBIm.beta_max,
                 'hidden_size': self.SBIm.hidden_size,
                 'depth': self.SBIm.depth,
                 'num_heads': self.SBIm.num_heads,

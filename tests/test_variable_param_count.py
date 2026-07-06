@@ -98,6 +98,26 @@ class MockSBIm:
 
         raise ValueError("MockSBIm.sample expects exactly one of x / theta")
 
+    def map_estimate(self, data, condition_mask, **kwargs):
+        """Analytic MAP: the posterior is Gaussian, so the mode equals the mean
+        the ascent is initialized with (extra spurious dims sit at their prior
+        mean already). Mirrors PFODE.map_estimate's interface."""
+        return torch.as_tensor(data, dtype=torch.float32).clone()
+
+    def log_prob(self, data, condition_mask, **kwargs):
+        """Analytic likelihood log p(x | theta): N(theta[:2], SIGMA_X^2 I) over
+        the latent (x) dims. Mirrors SBIm.log_prob's interface: `data` is the
+        joint vector, `condition_mask` marks the conditioned (theta) dims."""
+        data = torch.as_tensor(data, dtype=torch.float32)
+        mask = torch.as_tensor(condition_mask, dtype=torch.float32)
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(0).repeat(data.shape[0], 1)
+        theta_mean = data[:, :2]                  # only first two params drive x
+        x_obs = data[:, self.theta_dim:]
+        var = SIGMA_X**2
+        lp = (-0.5 * np.log(2 * np.pi * var) - (x_obs - theta_mean)**2 / (2 * var)).sum(-1)
+        return lp
+
 
 def _make_observations(n_obs, seed=1):
     g = torch.Generator().manual_seed(seed)
@@ -151,6 +171,30 @@ def test_variable_param_count_end_to_end():
     assert torch.allclose(total, torch.ones_like(total), atol=1e-4)
 
 
+def test_bic_criterion():
+    """criterion='bic' must run, penalize the extra parameter harder than AIC
+    (k*ln(n) > 2k for n > 8) and still pick the simpler true model."""
+    torch.manual_seed(0)
+    np.random.seed(0)
+    x = _make_observations(n_obs=25)
+
+    mtf_aic = _build_mtf()
+    mtf_aic.compare(x=x, num_samples=400, device="cpu", verbose=False, criterion="aic")
+    mtf_bic = _build_mtf()
+    mtf_bic.compare(x=x, num_samples=400, device="cpu", verbose=False, criterion="bic")
+
+    assert mtf_bic.stats["A_2params"]["AIC"] < mtf_bic.stats["B_3params"]["AIC"]
+    p_a = mtf_bic.stats["A_2params"]["model_prob"]
+    assert p_a > 0.9, f"simpler model should dominate under BIC, got {100*p_a:.1f}%"
+
+    # per-obs penalty difference: BIC = (k2-k1)*ln(n) vs AICc ~ 2*(k2-k1); with the
+    # same mock likelihoods the BIC gap between models must be larger for n=25
+    gap_aic = (mtf_aic.stats["B_3params"]["AIC"] - mtf_aic.stats["A_2params"]["AIC"])
+    gap_bic = (mtf_bic.stats["B_3params"]["AIC"] - mtf_bic.stats["A_2params"]["AIC"])
+    print(f"criterion gaps: AICc {gap_aic:.2f}, BIC {gap_bic:.2f}")
+    assert gap_bic > gap_aic, "BIC should penalize the extra parameter harder than AIC(c)"
+
+
 def test_small_sample_guard_no_crash_and_warns():
     """(iv) with n_obs small enough that n_obs - k - 1 <= 0, no crash and a
     warning is printed instead of a garbage (negative-denominator) correction."""
@@ -179,5 +223,6 @@ def test_small_sample_guard_no_crash_and_warns():
 
 if __name__ == "__main__":
     test_variable_param_count_end_to_end()
+    test_bic_criterion()
     test_small_sample_guard_no_crash_and_warns()
     print("All variable-parameter-count model-comparison tests passed.")
