@@ -319,7 +319,19 @@ class ModelTransfuser():
                 joint_init = torch.zeros(x_t.shape[0], model.nodes_size)
                 joint_init[:, c_bool] = x_t
                 joint_init[:, ~c_bool] = post_mean
-                joint_map = model.map_estimate(joint_init, condition_mask,
+
+                # With compositional (multi-obs) inference the hierarchy dims are
+                # GLOBAL: their posterior samples are shared across all stars, so
+                # they must not be re-optimized per observation (a per-star ascent
+                # would drag them to each star's individual mode). Hold them fixed
+                # at the joint posterior mean and ascend only the local dims.
+                map_condition_mask = condition_mask
+                if multi_obs_inference:
+                    map_condition_mask = condition_mask.clone()
+                    hier = hierarchy if hierarchy is not None else torch.nonzero(1 - condition_mask).flatten().tolist()
+                    map_condition_mask[list(hier)] = 1
+
+                joint_map = model.map_estimate(joint_init, map_condition_mask,
                                                sigma_start=2.0 * post_std.max().item(),
                                                device=device)
                 MAP_posterior = joint_map[:, ~c_bool].float()
