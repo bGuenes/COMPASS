@@ -203,6 +203,7 @@ class ModelTransfuser():
 
     def compare(self, x, err=None, condition_mask=None,
                timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
+               prior=None, correction="gauss",
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cuda", verbose=False, method="dpm",
                likelihood_method="pfode", map_method="score", criterion="aic",
@@ -292,6 +293,7 @@ class ModelTransfuser():
             posterior_samples = model.sample(x=x, err=err, condition_mask=condition_mask,
                                             timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
+                                            prior=prior, correction=correction,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
             posterior_samples = posterior_samples.cpu().numpy()
@@ -347,6 +349,7 @@ class ModelTransfuser():
                 likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=(1-condition_mask),
                                                 timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                                 multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
+                                                prior=prior, correction=correction,
                                                 order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                                 device=device, verbose=verbose, method=method)
                 likelihood_samples = likelihood_samples.cpu().numpy()
